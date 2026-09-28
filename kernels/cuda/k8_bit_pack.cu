@@ -39,20 +39,21 @@ __global__ void packGenericKernel(const unsigned int *symbols,
 
 }  // namespace
 
-void k8_bit_pack(const unsigned int *symbols, size_t symbolCount, unsigned bits,
-                 unsigned char *packed, size_t packedBytes,
-                 dysco_stream_t stream) {
-  const unsigned threads = 256;
+void k8_bit_pack(dysco::span<const unsigned int> symbols, unsigned bits,
+                 dysco::span<unsigned char> packed, dysco_stream_t stream) {
+  constexpr unsigned kThreads = 256;
+  const std::size_t symbolCount = symbols.size();
+  const std::size_t packedBytes = packed.size();
   if (bits == 8) {
-    const unsigned blocks =
-        static_cast<unsigned>((symbolCount + threads - 1) / threads);
-    DYSCO_LAUNCH_1D(pack8Kernel, blocks, threads, stream, symbols, symbolCount,
-                    packed);
+    const auto blocks =
+        static_cast<unsigned>((symbolCount + kThreads - 1) / kThreads);
+    DYSCO_LAUNCH_1D(pack8Kernel, blocks, kThreads, stream, symbols.data(),
+                    symbolCount, packed.data());
   } else {
-    const unsigned blocks =
-        static_cast<unsigned>((packedBytes + threads - 1) / threads);
-    DYSCO_LAUNCH_1D(packGenericKernel, blocks, threads, stream, symbols,
-                    symbolCount, bits, packed, packedBytes);
+    const auto blocks =
+        static_cast<unsigned>((packedBytes + kThreads - 1) / kThreads);
+    DYSCO_LAUNCH_1D(packGenericKernel, blocks, kThreads, stream, symbols.data(),
+                    symbolCount, bits, packed.data(), packedBytes);
   }
 }
 

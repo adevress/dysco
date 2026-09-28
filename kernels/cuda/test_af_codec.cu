@@ -75,15 +75,14 @@ static int runCase(size_t nAnt, size_t nChannels, size_t nPol, unsigned bits,
 
   std::vector<float> metaCpu(metaCount);
   std::vector<unsigned int> symCpu(2 * nVis);
-  cpuAfEncode(input.data(), ant1.data(), ant2.data(), nRows, nChannels, nPol,
-              nAnt, decValues.data(), decCount, seed, blockIndex, fitToMaximum,
-              metaCpu.data(), symCpu.data());
+  cpuAfEncode(input, ant1, ant2, nChannels, nPol, nAnt, decValues, seed,
+              blockIndex, fitToMaximum, metaCpu, symCpu);
 
-  AfCodec codec(nRows, nChannels, nPol, nAnt, decValues.data(), decCount, bits);
+  AfCodec codec(nRows, nChannels, nPol, nAnt, decValues, bits);
   std::vector<float> metaGpu(metaCount);
   std::vector<unsigned char> packedGpu(codec.packedByteCount());
-  codec.encode(input.data(), ant1.data(), ant2.data(), seed, blockIndex,
-               fitToMaximum, metaGpu.data(), packedGpu.data());
+  codec.encode(input, ant1, ant2, seed, blockIndex, fitToMaximum, metaGpu,
+               packedGpu);
 
   bool ok = true;
   ok &= compareBytes(metaCpu.data(), metaGpu.data(),
@@ -103,10 +102,9 @@ static int runCase(size_t nAnt, size_t nChannels, size_t nPol, unsigned bits,
 
   // Decode both and compare
   std::vector<float> outCpu(2 * nVis), outGpu(2 * nVis);
-  cpuAfDecode(symCpu.data(), metaCpu.data(), ant1.data(), ant2.data(), nRows,
-              nChannels, nPol, nAnt, decValues.data(), decCount, outCpu.data());
-  codec.decode(packedGpu.data(), packedGpu.size(), metaGpu.data(), ant1.data(),
-               ant2.data(), outGpu.data());
+  cpuAfDecode(symCpu, metaCpu, ant1, ant2, nChannels, nPol, nAnt,
+              decValues, outCpu);
+  codec.decode(packedGpu, metaGpu, ant1, ant2, outGpu);
   ok &= compareBytes(outCpu.data(), outGpu.data(), outCpu.size() * sizeof(float),
                      "decoded data");
 
@@ -120,7 +118,7 @@ int main() {
     std::printf("No GPU available\n");
     return 2;
   }
-  std::printf("GPU: %s\n", deviceName());
+  std::printf("GPU: %.*s\n", static_cast<int>(deviceName().size()), deviceName().data());
   int failures = 0;
   failures += runCase(8, 16, 4, 8, false);
   failures += runCase(8, 16, 4, 8, true);

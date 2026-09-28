@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
     std::printf("No GPU available\n");
     return 2;
   }
-  std::printf("GPU: %s\n", deviceName());
+  std::printf("GPU: %.*s\n", static_cast<int>(deviceName().size()), deviceName().data());
   std::printf("block: %zu rows x %zu ch x %zu pol, bits=%u, nVis=%zu (%.1f MiB raw)\n",
               nRows, nChannels, nPol, bits, nVis,
               (double)(nVis * 8) / 1024 / 1024);
@@ -68,64 +68,55 @@ int main(int argc, char **argv) {
   std::vector<float> metaCpu(metaCount), metaGpu(metaCount);
   std::vector<unsigned int> symCpu(2 * nVis), symGpu(2 * nVis);
 
-  AfCodec codec(nRows, nChannels, nPol, nAnt, decValues.data(), decCount, bits);
+  AfCodec codec(nRows, nChannels, nPol, nAnt, decValues, bits);
   std::vector<unsigned char> packedGpu(codec.packedByteCount());
   std::vector<float> outCpu(2 * nVis), outGpu(2 * nVis);
 
   // ---- warmup ----
-  cpuAfEncode(input.data(), ant1.data(), ant2.data(), nRows, nChannels, nPol,
-              nAnt, decValues.data(), decCount, seed, 0, false, metaCpu.data(),
-              symCpu.data());
-  codec.encode(input.data(), ant1.data(), ant2.data(), seed, 0, false,
-               metaGpu.data(), packedGpu.data());
-  cpuAfDecode(symCpu.data(), metaCpu.data(), ant1.data(), ant2.data(), nRows,
-              nChannels, nPol, nAnt, decValues.data(), decCount, outCpu.data());
-  codec.decode(packedGpu.data(), packedGpu.size(), metaGpu.data(), ant1.data(),
-               ant2.data(), outGpu.data());
+  cpuAfEncode(input, ant1, ant2, nChannels, nPol, nAnt, decValues, seed, 0,
+              false, metaCpu, symCpu);
+  codec.encode(input, ant1, ant2, seed, 0, false, metaGpu, packedGpu);
+  cpuAfDecode(symCpu, metaCpu, ant1, ant2, nChannels, nPol, nAnt,
+              decValues, outCpu);
+  codec.decode(packedGpu, metaGpu, ant1, ant2, outGpu);
 
   // ---- CPU encode ----
   double t0 = nowSeconds();
   for (size_t it = 0; it != iterations; ++it)
-    cpuAfEncode(input.data(), ant1.data(), ant2.data(), nRows, nChannels, nPol,
-                nAnt, decValues.data(), decCount, seed, it, false,
-                metaCpu.data(), symCpu.data());
+    cpuAfEncode(input, ant1, ant2, nChannels, nPol, nAnt, decValues, seed,
+                it, false, metaCpu, symCpu);
   double tCpuEnc = (nowSeconds() - t0) / iterations;
 
   // ---- CPU encode (with fit) ----
   t0 = nowSeconds();
   for (size_t it = 0; it != iterations; ++it)
-    cpuAfEncode(input.data(), ant1.data(), ant2.data(), nRows, nChannels, nPol,
-                nAnt, decValues.data(), decCount, seed, it, true,
-                metaCpu.data(), symCpu.data());
+    cpuAfEncode(input, ant1, ant2, nChannels, nPol, nAnt, decValues, seed,
+                it, true, metaCpu, symCpu);
   double tCpuEncFit = (nowSeconds() - t0) / iterations;
 
   // ---- GPU encode (no fit) ----
   t0 = nowSeconds();
   for (size_t it = 0; it != iterations; ++it)
-    codec.encode(input.data(), ant1.data(), ant2.data(), seed, it, false,
-                 metaGpu.data(), packedGpu.data());
+    codec.encode(input, ant1, ant2, seed, it, false, metaGpu, packedGpu);
   double tGpuEnc = (nowSeconds() - t0) / iterations;
 
   // ---- GPU encode (with fit-to-maximum) ----
   t0 = nowSeconds();
   for (size_t it = 0; it != iterations; ++it)
-    codec.encode(input.data(), ant1.data(), ant2.data(), seed, it, true,
-                 metaGpu.data(), packedGpu.data());
+    codec.encode(input, ant1, ant2, seed, it, true, metaGpu, packedGpu);
   double tGpuEncFit = (nowSeconds() - t0) / iterations;
 
   // ---- CPU decode ----
   t0 = nowSeconds();
   for (size_t it = 0; it != iterations; ++it)
-    cpuAfDecode(symCpu.data(), metaCpu.data(), ant1.data(), ant2.data(), nRows,
-                nChannels, nPol, nAnt, decValues.data(), decCount,
-                outCpu.data());
+    cpuAfDecode(symCpu, metaCpu, ant1, ant2, nChannels, nPol, nAnt,
+                decValues, outCpu);
   double tCpuDec = (nowSeconds() - t0) / iterations;
 
   // ---- GPU decode ----
   t0 = nowSeconds();
   for (size_t it = 0; it != iterations; ++it)
-    codec.decode(packedGpu.data(), packedGpu.size(), metaGpu.data(),
-                 ant1.data(), ant2.data(), outGpu.data());
+    codec.decode(packedGpu, metaGpu, ant1, ant2, outGpu);
   double tGpuDec = (nowSeconds() - t0) / iterations;
 
   const double rawMiB = static_cast<double>(nVis * 8) / 1024 / 1024;

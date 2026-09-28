@@ -218,48 +218,51 @@ __global__ void fitToMaxKernel(double *re, double *im, const int *ant1,
 
 }  // namespace
 
-void k6_fit_to_max(double *re, double *im, const int *ant1, const int *ant2,
-                   size_t nRows, size_t nChannels, size_t nPol, size_t nAnt,
-                   float *meta, double maxLevel, dysco_stream_t stream) {
-  const size_t visPerRow = nChannels * nPol;
+void k6_fit_to_max(dysco::span<double> re, dysco::span<double> im,
+                   dysco::span<const int> ant1, dysco::span<const int> ant2,
+                   std::size_t nRows, std::size_t nChannels, std::size_t nPol,
+                   std::size_t nAnt, dysco::span<float> meta, double maxLevel,
+                   dysco_stream_t stream) {
+  const std::size_t visPerRow = nChannels * nPol;
 
   // CSR: rows each antenna participates in (each non-autocorr row -> 2).
-  std::vector<size_t> offset(nAnt + 1, 0);
-  for (size_t row = 0; row != nRows; ++row) {
-    const size_t a1 = static_cast<size_t>(ant1[row]);
-    const size_t a2 = static_cast<size_t>(ant2[row]);
+  std::vector<std::size_t> offset(nAnt + 1, 0);
+  for (std::size_t row = 0; row != nRows; ++row) {
+    const auto a1 = static_cast<std::size_t>(ant1[row]);
+    const auto a2 = static_cast<std::size_t>(ant2[row]);
     if (a1 == a2) continue;
     ++offset[a1 + 1];
     ++offset[a2 + 1];
   }
-  for (size_t a = 0; a != nAnt; ++a) offset[a + 1] += offset[a];
-  const size_t total = offset[nAnt];
-  std::vector<int> csrRow(total ? total : 1);
-  std::vector<size_t> cursor(offset.begin(), offset.end() - 1);
-  for (size_t row = 0; row != nRows; ++row) {
-    const int a1 = ant1[row], a2 = ant2[row];
+  for (std::size_t a = 0; a != nAnt; ++a) offset[a + 1] += offset[a];
+  const std::size_t total = offset[nAnt];
+  std::vector<int> csrRow(total != 0 ? total : 1);
+  std::vector<std::size_t> cursor(offset.begin(), offset.end() - 1);
+  for (std::size_t row = 0; row != nRows; ++row) {
+    const int a1 = ant1[row];
+    const int a2 = ant2[row];
     if (a1 == a2) continue;
-    csrRow[cursor[a1]++] = static_cast<int>(row);
-    csrRow[cursor[a2]++] = static_cast<int>(row);
+    csrRow[cursor[static_cast<std::size_t>(a1)]++] = static_cast<int>(row);
+    csrRow[cursor[static_cast<std::size_t>(a2)]++] = static_cast<int>(row);
   }
 
   int *dCsrRow = nullptr;
-  size_t *dCsrOffset = nullptr;
-  DYSCO_MANAGED_ALLOC(&dCsrRow, (total ? total : 1) * sizeof(int));
-  DYSCO_MANAGED_ALLOC(&dCsrOffset, (nAnt + 1) * sizeof(size_t));
+  std::size_t *dCsrOffset = nullptr;
+  DYSCO_MANAGED_ALLOC(&dCsrRow, (total != 0 ? total : 1) * sizeof(int));
+  DYSCO_MANAGED_ALLOC(&dCsrOffset, (nAnt + 1) * sizeof(std::size_t));
   std::copy(csrRow.begin(), csrRow.end(), dCsrRow);
   std::copy(offset.begin(), offset.end(), dCsrOffset);
 
-  const size_t smemDoubles =
+  const std::size_t smemDoubles =
       visPerRow + 2 * nChannels + 2 * nAnt + 5;  // + sel[5]
-  const size_t smemBytes = smemDoubles * sizeof(double);
-  const unsigned threads = 256;
-  cudaFuncSetAttribute(fitToMaxKernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+  const std::size_t smemBytes = smemDoubles * sizeof(double);
+  constexpr unsigned kThreads = 256;
+  cudaFuncSetAttribute(fitToMaxKernel,
+                       cudaFuncAttributeMaxDynamicSharedMemorySize,
                        static_cast<int>(smemBytes));
-  fitToMaxKernel<<<1, threads, smemBytes, stream>>>(re, im, ant1, ant2, nRows,
-                                                    nChannels, nPol, nAnt, meta,
-                                                    maxLevel, dCsrRow,
-                                                    dCsrOffset);
+  fitToMaxKernel<<<1, kThreads, smemBytes, stream>>>(
+      re.data(), im.data(), ant1.data(), ant2.data(), nRows, nChannels, nPol,
+      nAnt, meta.data(), maxLevel, dCsrRow, dCsrOffset);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   DYSCO_FREE(dCsrRow);
   DYSCO_FREE(dCsrOffset);

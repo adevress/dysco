@@ -73,21 +73,24 @@ __global__ void storeGainsKernel(const double *rms, size_t nAnt, float *dest) {
 
 }  // namespace
 
-void k4_antenna_gain_solve(const double *matrix, size_t nAnt,
-                           double *rmsPerAntenna, dysco_stream_t stream) {
-  const unsigned threads = static_cast<unsigned>(nAnt < 1024 ? nAnt : 1024);
-  const size_t smemBytes = (nAnt + 1) * sizeof(double);
+void k4_antenna_gain_solve(dysco::span<const double> matrix, std::size_t nAnt,
+                           dysco::span<double> rmsPerAntenna,
+                           dysco_stream_t stream) {
+  const auto threads = static_cast<unsigned>(nAnt < 1024 ? nAnt : 1024);
+  const std::size_t smemBytes = (nAnt + 1) * sizeof(double);
   antennaGainSolveKernel<<<1, threads, smemBytes, stream>>>(
-      matrix, nAnt, rmsPerAntenna);
+      matrix.data(), nAnt, rmsPerAntenna.data());
 }
 
-void k4_store_antenna_gains(const double *rmsPerAntenna, size_t nAnt,
-                            float *destination, dysco_stream_t stream) {
-  const unsigned threads = 256;
-  const unsigned blocks =
-      static_cast<unsigned>((nAnt + threads - 1) / threads);
-  DYSCO_LAUNCH_1D(storeGainsKernel, blocks, threads, stream, rmsPerAntenna, nAnt,
-                  destination);
+void k4_store_antenna_gains(dysco::span<const double> rmsPerAntenna,
+                            dysco::span<float> destination,
+                            dysco_stream_t stream) {
+  constexpr unsigned kThreads = 256;
+  const std::size_t nAnt = rmsPerAntenna.size();
+  const auto blocks =
+      static_cast<unsigned>((nAnt + kThreads - 1) / kThreads);
+  DYSCO_LAUNCH_1D(storeGainsKernel, blocks, kThreads, stream,
+                  rmsPerAntenna.data(), nAnt, destination.data());
 }
 
 }  // namespace gpu

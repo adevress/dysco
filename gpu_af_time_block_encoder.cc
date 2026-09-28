@@ -19,8 +19,8 @@ GpuAFTimeBlockEncoder::GpuAFTimeBlockEncoder(size_t nPol, size_t nChannels,
 
 void GpuAFTimeBlockEncoder::ensureCodec(size_t nRows, size_t nAnt) {
   if (_codec && _codecRows == nRows && _codecAnt == nAnt) return;
-  _codec.reset(new gpu::AfCodec(nRows, _nChannels, _nPol, nAnt,
-                                _decValues.data(), _decValues.size(), _bits));
+  _codec = std::make_unique<gpu::AfCodec>(nRows, _nChannels, _nPol, nAnt,
+                                          _decValues, _bits);
   _codecRows = nRows;
   _codecAnt = nAnt;
 }
@@ -54,8 +54,11 @@ bool GpuAFTimeBlockEncoder::EncodePacked(
   std::vector<float> interleaved;
   std::vector<int> ant1, ant2;
   flatten(buffer, interleaved, ant1, ant2);
-  _codec->encode(interleaved.data(), ant1.data(), ant2.data(), seed, blockIndex,
-                 _fitToMaximum, metaBuffer, packed);
+  const std::size_t metaCount = _nChannels * _nPol + _nPol * antennaCount;
+  _codec->encode(
+      interleaved, ant1, ant2, seed, blockIndex, _fitToMaximum,
+      dysco::span<float>(metaBuffer, metaCount),
+      dysco::span<unsigned char>(packed, _codec->packedByteCount()));
   packedBytes = _codec->packedByteCount();
   return true;
 }
@@ -69,10 +72,14 @@ bool GpuAFTimeBlockEncoder::DecodePacked(
     const unsigned char *packed, size_t packedBytes, const int *ant1,
     const int *ant2, size_t nRows, size_t nAntennae, const float *meta) {
   ensureCodec(nRows, nAntennae);
-  const size_t visPerRow = _nPol * _nChannels;
-  const size_t nVis = nRows * visPerRow;
+  const std::size_t visPerRow = _nPol * _nChannels;
+  const std::size_t nVis = nRows * visPerRow;
+  const std::size_t metaCount = _nChannels * _nPol + _nPol * nAntennae;
   std::vector<float> interleaved(2 * nVis);
-  _codec->decode(packed, packedBytes, meta, ant1, ant2, interleaved.data());
+  _codec->decode(dysco::span<const unsigned char>(packed, packedBytes),
+                 dysco::span<const float>(meta, metaCount),
+                 dysco::span<const int>(ant1, nRows),
+                 dysco::span<const int>(ant2, nRows), interleaved);
   buffer.resize(nRows);
   for (size_t r = 0; r != nRows; ++r) {
     FBufferRow &row = buffer[r];

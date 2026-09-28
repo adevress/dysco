@@ -43,6 +43,20 @@ DYSCO_HD DYSCO_INLINE unsigned int quantizeDither(float value,
     return static_cast<unsigned int>(lo - 1);
 }
 
+// Flat variant used by the tests: one symbol per input value, with the dither
+// indexed by the value index (the AF path uses 2*i / 2*i+1).
+__global__ void quantizeFlatKernel(const float *values, size_t count,
+                                   const float *decValues, size_t decCount,
+                                   uint32_t seedLo, uint32_t seedHi,
+                                   uint64_t blockIndex,
+                                   unsigned int *symbols) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= count) return;
+  const unsigned int dither =
+      random123::ditherValue(seedLo, seedHi, blockIndex, i);
+  symbols[i] = quantizeDither(values[i], decValues, decCount, dither);
+}
+
 __global__ void quantizeDitherKernel(const double *re, const double *im,
                                      size_t nVis, const float *decValues,
                                      size_t decCount, uint32_t seedLo,
@@ -63,15 +77,35 @@ __global__ void quantizeDitherKernel(const double *re, const double *im,
 
 }  // namespace
 
-void k7_quantize_dither(const double *re, const double *im, size_t nVis,
-                        const float *decValues, size_t decCount, uint32_t seedLo,
-                        uint32_t seedHi, uint64_t blockIndex,
-                        unsigned int *symbols, dysco_stream_t stream) {
-  const unsigned threads = 256;
-  const unsigned blocks =
-      static_cast<unsigned>((nVis + threads - 1) / threads);
-  DYSCO_LAUNCH_1D(quantizeDitherKernel, blocks, threads, stream, re, im, nVis,
-                  decValues, decCount, seedLo, seedHi, blockIndex, symbols);
+void k7_quantize_flat(dysco::span<const float> values,
+                      dysco::span<const float> decValues, std::uint32_t seedLo,
+                      std::uint32_t seedHi, std::uint64_t blockIndex,
+                      dysco::span<unsigned int> symbols,
+                      dysco_stream_t stream) {
+  constexpr unsigned kThreads = 256;
+  const std::size_t count = values.size();
+  const auto blocks =
+      static_cast<unsigned>((count + kThreads - 1) / kThreads);
+  DYSCO_LAUNCH_1D(quantizeFlatKernel, blocks, kThreads, stream, values.data(),
+                  count, decValues.data(), decValues.size(), seedLo, seedHi,
+                  blockIndex, symbols.data());
+}
+
+void k7_quantize_dither(dysco::span<const double> re,
+                        dysco::span<const double> im,
+                        dysco::span<const float> decValues,
+                        std::uint32_t seedLo, std::uint32_t seedHi,
+                        std::uint64_t blockIndex,
+                        dysco::span<unsigned int> symbols,
+                        dysco_stream_t stream) {
+  constexpr unsigned kThreads = 256;
+  const std::size_t nVis = re.size();
+  const std::size_t decCount = decValues.size();
+  const auto blocks =
+      static_cast<unsigned>((nVis + kThreads - 1) / kThreads);
+  DYSCO_LAUNCH_1D(quantizeDitherKernel, blocks, kThreads, stream, re.data(),
+                  im.data(), nVis, decValues.data(), decCount, seedLo, seedHi,
+                  blockIndex, symbols.data());
 }
 
 }  // namespace gpu

@@ -39,14 +39,14 @@ __global__ void channelRmsKernel(const double *re, const double *im,
 
 }  // namespace
 
-void k2_channel_rms(const double *re, const double *im, size_t nRows,
-                    size_t visPerRow, float *channelRms,
-                    dysco_stream_t stream) {
-  const unsigned threads = 256;
-  const unsigned blocks =
-      static_cast<unsigned>((visPerRow + threads - 1) / threads);
-  DYSCO_LAUNCH_1D(channelRmsKernel, blocks, threads, stream, re, im, nRows,
-                  visPerRow, channelRms);
+void k2_channel_rms(dysco::span<const double> re, dysco::span<const double> im,
+                    std::size_t nRows, std::size_t visPerRow,
+                    dysco::span<float> channelRms, dysco_stream_t stream) {
+  constexpr unsigned kThreads = 256;
+  const auto blocks =
+      static_cast<unsigned>((visPerRow + kThreads - 1) / kThreads);
+  DYSCO_LAUNCH_1D(channelRmsKernel, blocks, kThreads, stream, re.data(),
+                  im.data(), nRows, visPerRow, channelRms.data());
 }
 
 }  // namespace gpu

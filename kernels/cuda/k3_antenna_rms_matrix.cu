@@ -58,22 +58,26 @@ __global__ void antennaRmsMatrixKernel(const double *re, const double *im,
 
 }  // namespace
 
-void k3_antenna_rms_matrix(const double *re, const double *im, const int *ant1,
-                           const int *ant2, size_t nRows, size_t nChannels,
-                           size_t nPol, size_t nAnt, size_t pol,
-                           double *matrix, dysco_stream_t stream) {
+void k3_antenna_rms_matrix(dysco::span<const double> re,
+                           dysco::span<const double> im,
+                           dysco::span<const int> ant1,
+                           dysco::span<const int> ant2, std::size_t nRows,
+                           std::size_t nChannels, std::size_t nPol,
+                           std::size_t nAnt, std::size_t pol,
+                           dysco::span<double> matrix, dysco_stream_t stream) {
+  constexpr unsigned kThreads = 256;
   {
-    const size_t count = nAnt * nAnt;
-    const unsigned threads = 256;
-    const unsigned blocks =
-        static_cast<unsigned>((count + threads - 1) / threads);
-    DYSCO_LAUNCH_1D(initNaNKernel, blocks, threads, stream, matrix, count);
+    const std::size_t count = nAnt * nAnt;
+    const auto blocks =
+        static_cast<unsigned>((count + kThreads - 1) / kThreads);
+    DYSCO_LAUNCH_1D(initNaNKernel, blocks, kThreads, stream, matrix.data(),
+                    count);
   }
-  const unsigned threads = 256;
-  const unsigned blocks =
-      static_cast<unsigned>((nRows + threads - 1) / threads);
-  DYSCO_LAUNCH_1D(antennaRmsMatrixKernel, blocks, threads, stream, re, im,
-                  ant1, ant2, nRows, nChannels, nPol, nAnt, pol, matrix);
+  const auto blocks =
+      static_cast<unsigned>((nRows + kThreads - 1) / kThreads);
+  DYSCO_LAUNCH_1D(antennaRmsMatrixKernel, blocks, kThreads, stream, re.data(),
+                  im.data(), ant1.data(), ant2.data(), nRows, nChannels, nPol,
+                  nAnt, pol, matrix.data());
 }
 
 }  // namespace gpu

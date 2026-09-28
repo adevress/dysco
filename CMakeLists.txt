@@ -47,6 +47,8 @@ if(ENABLE_CUDA)
   set(CMAKE_CUDA_STANDARD_REQUIRED YES)
   add_compile_definitions(DYSCO_HAS_CUDA)
   list(APPEND DYSCO_SOURCES gpu_af_time_block_encoder.cc)
+  # GPU variants of the relevant unit tests (only exist in CUDA builds).
+  set(DYSCO_TEST_GPU_SOURCES tests/testgpu.cc)
   list(
     APPEND
     DYSCO_GPU_SOURCES
@@ -123,10 +125,14 @@ if(Boost_FOUND)
     tests/testdictionary.cc
     tests/testdithering.cc
     tests/testdyscostman.cc
-    tests/testtimeblockencoder.cc)
+    tests/testtimeblockencoder.cc
+    ${DYSCO_TEST_GPU_SOURCES})
   target_link_libraries(
     runtests ${Boost_FILESYSTEM_LIBRARY} ${Boost_SYSTEM_LIBRARY}
     ${GSL_LIBRARIES} ${CASACORE_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+  if(ENABLE_CUDA)
+    target_link_libraries(runtests CUDA::cudart)
+  endif()
   add_test(runtests runtests)
   add_custom_target(
     check

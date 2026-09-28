@@ -13,10 +13,12 @@ namespace gpu {
 
 namespace {
 
-__global__ void gatherConvertKernel(const float *interleaved, size_t nVis,
+__global__ void gatherConvertKernel(const float *interleaved, std::size_t nVis,
                                     double *re, double *im) {
-  for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       i < nVis; i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+  for (std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x +
+                       threadIdx.x;
+       i < nVis;
+       i += static_cast<std::size_t>(gridDim.x) * blockDim.x) {
     // The input pointer is float-based: complex<float> is 2 floats.
     re[i] = static_cast<double>(interleaved[i * 2]);
     im[i] = static_cast<double>(interleaved[i * 2 + 1]);
@@ -25,14 +27,15 @@ __global__ void gatherConvertKernel(const float *interleaved, size_t nVis,
 
 }  // namespace
 
-void k1_gather_convert(const float *interleaved, size_t nRows, size_t visPerRow,
-                       double *re, double *im, dysco_stream_t stream) {
-  const size_t nVis = nRows * visPerRow;
-  const unsigned threads = 256;
-  const unsigned blocks =
-      static_cast<unsigned>((nVis + threads - 1) / threads);
-  DYSCO_LAUNCH_1D(gatherConvertKernel, blocks, threads, stream, interleaved,
-                  nVis, re, im);
+void k1_gather_convert(dysco::span<const float> interleaved, std::size_t nRows,
+                       std::size_t visPerRow, dysco::span<double> re,
+                       dysco::span<double> im, dysco_stream_t stream) {
+  const std::size_t nVis = nRows * visPerRow;
+  constexpr unsigned kThreads = 256;
+  const auto blocks =
+      static_cast<unsigned>((nVis + kThreads - 1) / kThreads);
+  DYSCO_LAUNCH_1D(gatherConvertKernel, blocks, kThreads, stream,
+                  interleaved.data(), nVis, re.data(), im.data());
 }
 
 }  // namespace gpu

@@ -30,21 +30,18 @@ __global__ void unpackGenericKernel(const unsigned char *packed, unsigned bits,
 
 }  // namespace
 
-void d1_bit_unpack(const unsigned char *packed, size_t /*packedBytes*/,
-                   unsigned bits, unsigned int *symbols, size_t symbolCount,
-                   dysco_stream_t stream) {
-  const unsigned threads = 256;
-  if (bits == 8) {
-    const unsigned blocks =
-        static_cast<unsigned>((symbolCount + threads - 1) / threads);
-    DYSCO_LAUNCH_1D(unpack8Kernel, blocks, threads, stream, packed, symbolCount,
-                    symbols);
-  } else {
-    const unsigned blocks =
-        static_cast<unsigned>((symbolCount + threads - 1) / threads);
-    DYSCO_LAUNCH_1D(unpackGenericKernel, blocks, threads, stream, packed, bits,
-                    symbols, symbolCount);
-  }
+void d1_bit_unpack(dysco::span<const unsigned char> packed, unsigned bits,
+                   dysco::span<unsigned int> symbols, dysco_stream_t stream) {
+  constexpr unsigned kThreads = 256;
+  const std::size_t symbolCount = symbols.size();
+  const auto blocks =
+      static_cast<unsigned>((symbolCount + kThreads - 1) / kThreads);
+  if (bits == 8)
+    DYSCO_LAUNCH_1D(unpack8Kernel, blocks, kThreads, stream, packed.data(),
+                    symbolCount, symbols.data());
+  else
+    DYSCO_LAUNCH_1D(unpackGenericKernel, blocks, kThreads, stream, packed.data(),
+                    bits, symbols.data(), symbolCount);
 }
 
 }  // namespace gpu

@@ -39,19 +39,21 @@ __global__ void dequantizeKernel(const unsigned int *symbols, size_t nVis,
 
 }  // namespace
 
-void d2_dequantize(const unsigned int *symbols, size_t nRows, size_t nChannels,
-                   size_t nPol, size_t nAnt, const float *meta,
-                   const int *ant1, const int *ant2, const float *decValues,
-                   size_t decCount, float *interleaved,
-                   dysco_stream_t stream) {
-  const size_t visPerRow = nChannels * nPol;
-  const size_t nVis = nRows * visPerRow;
-  const unsigned threads = 256;
-  const unsigned blocks =
-      static_cast<unsigned>((nVis + threads - 1) / threads);
-  DYSCO_LAUNCH_1D(dequantizeKernel, blocks, threads, stream, symbols, nVis,
-                  visPerRow, nPol, nAnt, meta, ant1, ant2, decValues, decCount,
-                  interleaved);
+void d2_dequantize(dysco::span<const unsigned int> symbols, std::size_t nRows,
+                   std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
+                   dysco::span<const float> meta, dysco::span<const int> ant1,
+                   dysco::span<const int> ant2,
+                   dysco::span<const float> decValues,
+                   dysco::span<float> interleaved, dysco_stream_t stream) {
+  const std::size_t visPerRow = nChannels * nPol;
+  const std::size_t nVis = nRows * visPerRow;
+  const std::size_t decCount = decValues.size();
+  constexpr unsigned kThreads = 256;
+  const auto blocks =
+      static_cast<unsigned>((nVis + kThreads - 1) / kThreads);
+  DYSCO_LAUNCH_1D(dequantizeKernel, blocks, kThreads, stream, symbols.data(),
+                  nVis, visPerRow, nPol, nAnt, meta.data(), ant1.data(),
+                  ant2.data(), decValues.data(), decCount, interleaved.data());
 }
 
 }  // namespace gpu
