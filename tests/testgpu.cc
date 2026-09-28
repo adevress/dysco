@@ -125,23 +125,50 @@ void CheckGpuMatchesCpu(const GpuBlock& block,
                fitToMaximum, metaGpu, packedGpu);
 
   BOOST_CHECK_EQUAL(packedGpu.size(), packedCpu.size());
-  BOOST_CHECK(std::memcmp(metaCpu.data(), metaGpu.data(),
-                          metaCount * sizeof(float)) == 0);
-  BOOST_CHECK(std::memcmp(packedCpu.data(), packedGpu.data(),
-                          packedCpu.size()) == 0);
 
-  // The GPU packed stream must unpack (with the production BytePacker) to the
-  // CPU symbols, and the GPU decode must match the CPU decode.
-  std::vector<unsigned int> symbolsFromGpu(symbolCount);
-  BytePacker::unpack(bits, symbolsFromGpu.data(), packedGpu.data(),
-                     symbolCount);
-  BOOST_CHECK(symbolsFromGpu == symbolsCpu);
+  if (!fitToMaximum) {
+    // Without fit-to-max the GPU path is bit-identical to the CPU reference.
+    BOOST_CHECK(std::memcmp(metaCpu.data(), metaGpu.data(),
+                            metaCount * sizeof(float)) == 0);
+    BOOST_CHECK(std::memcmp(packedCpu.data(), packedGpu.data(),
+                            packedCpu.size()) == 0);
 
+    // The GPU packed stream must unpack (with the production BytePacker) to
+    // the CPU symbols, and the GPU decode must match the CPU decode.
+    std::vector<unsigned int> symbolsFromGpu(symbolCount);
+    BytePacker::unpack(bits, symbolsFromGpu.data(), packedGpu.data(),
+                       symbolCount);
+    BOOST_CHECK(symbolsFromGpu == symbolsCpu);
+
+    std::vector<float> outCpu(2 * block.nVis), outGpu(2 * block.nVis);
+    cpuAfDecode(symbolsCpu, metaCpu, block.ant1, block.ant2, block.nChan,
+                block.nPol, block.nAnt, decValues, outCpu);
+    codec.decode(packedGpu, metaGpu, block.ant1, block.ant2, outGpu);
+    BOOST_CHECK(outGpu == outCpu);
+    return;
+  }
+
+  // Fit-to-max uses the parallel Jacobi algorithm on the GPU while the CPU
+  // encoder deliberately keeps the greedy algorithm, so the two are not
+  // bit-identical (different headroom allocation).  Validate that they agree
+  // within a few percent instead.
+  for (std::size_t i = 0; i != metaCount; ++i) {
+    const float a = metaCpu[i], b = metaGpu[i];
+    const float tolerance = 1e-2f * std::max(1.0f, std::fabs(a));
+    BOOST_CHECK_MESSAGE(std::fabs(a - b) <= tolerance,
+                        "metadata[" << i << "]: " << a << " vs " << b);
+  }
   std::vector<float> outCpu(2 * block.nVis), outGpu(2 * block.nVis);
   cpuAfDecode(symbolsCpu, metaCpu, block.ant1, block.ant2, block.nChan,
               block.nPol, block.nAnt, decValues, outCpu);
   codec.decode(packedGpu, metaGpu, block.ant1, block.ant2, outGpu);
-  BOOST_CHECK(outGpu == outCpu);
+  double error = 0.0, signal = 0.0;
+  for (std::size_t i = 0; i != outCpu.size(); ++i) {
+    const double d = static_cast<double>(outGpu[i]) - outCpu[i];
+    error += d * d;
+    signal += static_cast<double>(outCpu[i]) * outCpu[i];
+  }
+  BOOST_CHECK_LT(std::sqrt(error), std::sqrt(signal) * 1e-2 + 1e-4);
 }
 
 float Rms(const std::vector<float>& values) {
@@ -515,9 +542,12 @@ BOOST_AUTO_TEST_CASE(dyscostman_maketable) {
   GpuTableFixture fixture(3);
   casacore::Table table("TestTableGpu");
   casacore::ArrayColumn<casacore::Complex> dataCol(table, "DATA");
+  // The GPU fit path uses the parallel Jacobi algorithm, a heuristic that is
+  // not bit-identical to the CPU greedy metadadata (see
+  // instructions-fit-to-max-gpu.md); allow a 1 % tolerance.
   for (std::size_t i = 0; i != table.nrow(); ++i)
     BOOST_CHECK_CLOSE_FRACTION((*dataCol(i).cbegin()).real(),
-                               static_cast<float>(i), 1e-3);
+                               static_cast<float>(i), 1e-2);
 }
 
 BOOST_AUTO_TEST_CASE(dyscostman_readonly) {
@@ -535,7 +565,7 @@ BOOST_AUTO_TEST_CASE(dyscostman_readonly) {
   casacore::ArrayColumn<casacore::Complex> dataCol(table, "DATA");
   for (std::size_t i = 0; i != table.nrow(); ++i)
     BOOST_CHECK_CLOSE_FRACTION((*dataCol(i).cbegin()).real(),
-                               static_cast<float>(i), 1e-3);
+                               static_cast<float>(i), 1e-2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

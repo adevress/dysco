@@ -22,6 +22,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(BUILD_PACKAGES "Build Debian packages" OFF)
 option(ENABLE_CUDA "Build the CUDA GPU backend" OFF)
+option(ENABLE_NVBENCH "Build nvbench-based benchmarks (requires ENABLE_CUDA)"
+       OFF)
 
 # User may optionally set `TARGET_CPU` if `PORTABLE=OFF`
 option(PORTABLE "Build portable binaries (with slightly decreased performance)"
@@ -87,6 +89,11 @@ add_executable(decompress decompress.cc)
 target_link_libraries(decompress dyscostman ${GSL_LIBRARIES}
                       ${CASACORE_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 
+# Error-statistics tool: compare an original MS against a decompressed copy.
+add_executable(mscompare tools/mscompare.cc)
+target_link_libraries(mscompare ${CASACORE_LIBRARIES}
+                      ${CMAKE_THREAD_LIBS_INIT})
+
 if(ENABLE_CUDA)
   add_executable(dsbench kernels/cuda/bench_af_codec.cu ${DYSCO_GPU_SOURCES}
                           kernels/af_reference.cc)
@@ -98,6 +105,17 @@ if(ENABLE_CUDA)
                                 ${DYSCO_GPU_SOURCES} kernels/af_reference.cc)
   target_include_directories(dysco_gpu_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(dysco_gpu_test CUDA::cudart)
+
+  if(ENABLE_NVBENCH)
+    find_package(nvbench REQUIRED)
+    add_executable(dsbench_nvbench bench/bench_af_codec_nvbench.cu
+                                   ${DYSCO_GPU_SOURCES}
+                                   kernels/af_reference.cc stochasticencoder.cc)
+    target_include_directories(dsbench_nvbench
+                               PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(dsbench_nvbench nvbench::main ${GSL_LIBRARIES}
+                          CUDA::cudart)
+  endif()
 endif()
 
 # add target to generate API documentation with Doxygen

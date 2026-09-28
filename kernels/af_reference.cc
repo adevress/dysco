@@ -73,7 +73,9 @@ void solveAntennaGains(dysco::span<const double> matrix, std::size_t nAnt,
   }
 }
 
-/// K6 mirror.
+/// K6 CPU mirror of `AFTimeBlockEncoder::fitToMaximum`: the legacy greedy
+/// algorithm.  This is what the CPU encoder keeps using; the GPU backend uses
+/// the parallel Jacobi variant (`kernels/cuda/k6_fit_to_max.cu`) instead.
 void fitToMaximumRef(dysco::span<double> re, dysco::span<double> im,
                      dysco::span<const int> ant1, dysco::span<const int> ant2,
                      std::size_t nChannels, std::size_t nPol, std::size_t nAnt,

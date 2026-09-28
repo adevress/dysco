@@ -6,6 +6,7 @@
 #include "../af_reference.h"
 #include "../../bytepacker.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -85,28 +86,58 @@ static int runCase(size_t nAnt, size_t nChannels, size_t nPol, unsigned bits,
                packedGpu);
 
   bool ok = true;
-  ok &= compareBytes(metaCpu.data(), metaGpu.data(),
-                     metaCount * sizeof(float), "metadata");
+  // Without fit-to-max the GPU path is bit-identical to the CPU reference.
+  // With fit-to-max the default GPU algorithm is the parallel Jacobi variant,
+  // which is only required to agree within a tolerance (see
+  // instructions-fit-to-max-gpu.md).
+  if (!fitToMaximum) {
+    ok &= compareBytes(metaCpu.data(), metaGpu.data(),
+                       metaCount * sizeof(float), "metadata");
 
-  // CPU packed output via the production BytePacker
-  std::vector<unsigned char> packedCpu(codec.packedByteCount());
-  BytePacker::pack(bits, packedCpu.data(), symCpu.data(), 2 * nVis);
-  ok &= compareBytes(packedCpu.data(), packedGpu.data(), packedCpu.size(),
-                     "packed symbols");
+    // CPU packed output via the production BytePacker
+    std::vector<unsigned char> packedCpu(codec.packedByteCount());
+    BytePacker::pack(bits, packedCpu.data(), symCpu.data(), 2 * nVis);
+    ok &= compareBytes(packedCpu.data(), packedGpu.data(), packedCpu.size(),
+                       "packed symbols");
 
-  // Unpack GPU symbols and compare with the CPU symbols
-  std::vector<unsigned int> symGpu(2 * nVis);
-  BytePacker::unpack(bits, symGpu.data(), packedGpu.data(), 2 * nVis);
-  ok &= compareBytes(symCpu.data(), symGpu.data(),
-                     symCpu.size() * sizeof(unsigned int), "symbols");
+    // Unpack GPU symbols and compare with the CPU symbols
+    std::vector<unsigned int> symGpu(2 * nVis);
+    BytePacker::unpack(bits, symGpu.data(), packedGpu.data(), 2 * nVis);
+    ok &= compareBytes(symCpu.data(), symGpu.data(),
+                       symCpu.size() * sizeof(unsigned int), "symbols");
+  } else {
+    for (size_t i = 0; i != metaCount; ++i) {
+      const float a = metaCpu[i], b = metaGpu[i];
+      const float tolerance = 1e-2f * std::max(1.0f, std::fabs(a));
+      if (std::fabs(a - b) > tolerance) {
+        std::printf("  MISMATCH in metadata at %zu: %g vs %g\n", i, a, b);
+        ok = false;
+        break;
+      }
+    }
+  }
 
   // Decode both and compare
   std::vector<float> outCpu(2 * nVis), outGpu(2 * nVis);
   cpuAfDecode(symCpu, metaCpu, ant1, ant2, nChannels, nPol, nAnt,
               decValues, outCpu);
   codec.decode(packedGpu, metaGpu, ant1, ant2, outGpu);
-  ok &= compareBytes(outCpu.data(), outGpu.data(), outCpu.size() * sizeof(float),
-                     "decoded data");
+  if (!fitToMaximum) {
+    ok &= compareBytes(outCpu.data(), outGpu.data(),
+                       outCpu.size() * sizeof(float), "decoded data");
+  } else {
+    double error = 0.0, signal = 0.0;
+    for (size_t i = 0; i != outCpu.size(); ++i) {
+      const double d = static_cast<double>(outGpu[i]) - outCpu[i];
+      error += d * d;
+      signal += static_cast<double>(outCpu[i]) * outCpu[i];
+    }
+    if (std::sqrt(error) > std::sqrt(signal) * 1e-2 + 1e-4) {
+      std::printf("  MISMATCH decoded data: relative rms error %.4g\n",
+                  std::sqrt(error) / (std::sqrt(signal) + 1e-30));
+      ok = false;
+    }
+  }
 
   std::printf("  nAnt=%zu C=%zu P=%zu bits=%u fit=%d : %s\n", nAnt, nChannels,
               nPol, bits, fitToMaximum ? 1 : 0, ok ? "OK" : "FAIL");
