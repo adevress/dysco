@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 #include "dictionary.h"
 
@@ -145,6 +146,17 @@ class StochasticEncoder {
   }
 
   size_t QuantizationCount() const { return _decDictionary.size() + 1; }
+
+  /**
+   * The decode dictionary (centroids), size QuantizationCount()-1.  This is
+   * the table indexed by a symbol during decoding, and is also used as the
+   * boundary table during dithered encoding.  The GPU backend needs it
+   * explicitly (the GPU cannot call into this object).
+   */
+  std::vector<ValueType> DecodeValues() const {
+    return std::vector<ValueType>(_decDictionary.begin(),
+                                  _decDictionary.end());
+  }
 
   ValueType MaxQuantity() const { return _decDictionary.largest_value(); }
 

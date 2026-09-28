@@ -18,7 +18,9 @@ void createDyscoStManColumn(casacore::Table &ms, const std::string &name,
                             unsigned bitsPerComplex, unsigned bitsPerWeight,
                             Normalization normalization,
                             DyscoDistribution distribution, double studentsTNu,
-                            double distributionTruncation, bool staticSeed) {
+                            double distributionTruncation, bool staticSeed,
+                            RandomGenerator randomGenerator, bool useGpu,
+                            bool fitToMaximum) {
   std::cout << "Constructing new column '" << name << "'...\n";
   casacore::ArrayColumnDesc<T> columnDesc(name, "", "DyscoStMan", "DyscoStMan",
                                           shape);
@@ -48,6 +50,12 @@ void createDyscoStManColumn(casacore::Table &ms, const std::string &name,
         break;
     }
     dataManager.SetNormalization(normalization);
+    dataManager.SetRandomGenerator(randomGenerator);
+    dataManager.SetFitToMaximum(fitToMaximum);
+    if (useGpu) {
+      std::cout << "Enabling CUDA backend...\n";
+      dataManager.SetGpuEnabled(true);
+    }
     if (staticSeed) {
       std::cout << "Setting static seed...\n";
       dataManager.SetStaticSeed(true);
@@ -123,6 +131,18 @@ int main(int argc, char *argv[]) {
            "\tnoise between different measurement sets and should therefore "
            "only be used for\n"
            "\texperimentation.\n"
+           "-rng <mt|philox>\n"
+           "\tSelect the dither random generator. 'philox' is a counter-based "
+           "Random123\n"
+           "\tgenerator which is bit-compatible with the CUDA backend; 'mt' is "
+           "the\n"
+           "\thistorical std::mt19937 generator (default).\n"
+           "-cuda\n"
+           "\tUse the CUDA backend for compression (requires a build with "
+           "ENABLE_CUDA).\n"
+           "-fit-to-max / -no-fit-to-max\n"
+           "\tEnable/disable the AF fit-to-maximum post-normalization "
+           "(default: on).\n"
            "\n"
            "Defaults: \n"
            "\tbits per data val = 8\n"
@@ -138,6 +158,9 @@ int main(int argc, char *argv[]) {
   unsigned bitsPerFloat = 8, bitsPerWeight = 12;
   double distributionTruncation = 2.5;
   bool staticSeed = false;
+  RandomGenerator randomGenerator = RandomGenerator::kMersenneTwister;
+  bool useGpu = false;
+  bool fitToMaximum = true;
 
   std::vector<std::string> columnNames;
 
@@ -173,6 +196,21 @@ int main(int argc, char *argv[]) {
       normalization = Normalization::kRow;
     } else if (p == "static-seed") {
       staticSeed = true;
+    } else if (p == "cuda") {
+      useGpu = true;
+    } else if (p == "no-fit-to-max") {
+      fitToMaximum = false;
+    } else if (p == "fit-to-max") {
+      fitToMaximum = true;
+    } else if (p == "rng") {
+      ++argi;
+      const std::string value(argv[argi]);
+      if (value == "philox" || value == "random123")
+        randomGenerator = RandomGenerator::kPhilox;
+      else if (value == "mt" || value == "mersenne" || value == "mt19937")
+        randomGenerator = RandomGenerator::kMersenneTwister;
+      else
+        throw std::runtime_error(std::string("Unknown RNG: ") + value);
     } else
       throw std::runtime_error(std::string("Invalid parameter: ") + argv[argi]);
     ++argi;
@@ -205,6 +243,11 @@ int main(int argc, char *argv[]) {
       break;
   }
   std::cout << "\n"
+               "\trng = "
+            << (randomGenerator == RandomGenerator::kPhilox
+                    ? "Philox (counter-based)"
+                    : "Mersenne Twister")
+            << "\n\tcuda backend = " << (useGpu ? "\ton" : "off") << "\n"
                "\tnormalization = ";
   switch (normalization) {
     case Normalization::kAF:
@@ -349,11 +392,13 @@ int main(int argc, char *argv[]) {
       if (columnName == "WEIGHT_SPECTRUM")
         createDyscoStManColumn<float>(
             *ms, columnName, shape, bitsPerFloat, bitsPerWeight, normalization,
-            distribution, 1.0, distributionTruncation, staticSeed);
+            distribution, 1.0, distributionTruncation, staticSeed,
+            randomGenerator, useGpu, fitToMaximum);
       else
         createDyscoStManColumn<casacore::Complex>(
             *ms, columnName, shape, bitsPerFloat, bitsPerWeight, normalization,
-            distribution, 1.0, distributionTruncation, staticSeed);
+            distribution, 1.0, distributionTruncation, staticSeed,
+            randomGenerator, useGpu, fitToMaximum);
     }
     for (std::string columnName : columnNames) {
       if (columnName == "WEIGHT_SPECTRUM")

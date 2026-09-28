@@ -85,18 +85,25 @@ void ThreadedDyscoColumn<DataType>::loadBlock(size_t blockIndex) {
                                                   nChannels, _antennaCount);
     unsigned char *symbolStart =
         _packedBlockReadBuffer.data() + nMetaFloats * sizeof(float);
-    BytePacker::unpack(_bitsPerSymbol, _unpackedSymbolReadBuffer.data(),
-                       symbolStart,
-                       symbolCount(nRows, nPolarizations, nChannels));
+    const size_t packedBytes = _blockSize - nMetaFloats * sizeof(float);
     float *metaData = reinterpret_cast<float *>(_packedBlockReadBuffer.data());
-    initializeDecode(_timeBlockBuffer.get(), metaData, nRows, _antennaCount);
     uint64_t startRow = getRowIndex(blockIndex);
-    _timeBlockBuffer->resize(nRows);
+    std::vector<int> ant1s(nRows), ant2s(nRows);
     for (size_t blockRow = 0; blockRow != nRows; ++blockRow) {
-      int a1 = (*_ant1Col)(startRow + blockRow),
-          a2 = (*_ant2Col)(startRow + blockRow);
-      decode(_timeBlockBuffer.get(), _unpackedSymbolReadBuffer.data(), blockRow,
-             a1, a2);
+      ant1s[blockRow] = (*_ant1Col)(startRow + blockRow);
+      ant2s[blockRow] = (*_ant2Col)(startRow + blockRow);
+    }
+    // Accelerator fast path: decode directly from the packed bytes.
+    if (!decodePacked(_timeBlockBuffer.get(), symbolStart, packedBytes,
+                      ant1s.data(), ant2s.data(), nRows, _antennaCount,
+                      metaData)) {
+      BytePacker::unpack(_bitsPerSymbol, _unpackedSymbolReadBuffer.data(),
+                         symbolStart,
+                         symbolCount(nRows, nPolarizations, nChannels));
+      initializeDecode(_timeBlockBuffer.get(), metaData, nRows, _antennaCount);
+      _timeBlockBuffer->resize(nRows);
+      decodeBlock(_timeBlockBuffer.get(), _unpackedSymbolReadBuffer.data(),
+                  ant1s.data(), ant2s.data(), nRows, _antennaCount, metaData);
     }
   }
   _currentBlock = blockIndex;
@@ -282,13 +289,17 @@ void ThreadedDyscoColumn<DataType>::encodeAndWrite(
   float *metaBuffer = reinterpret_cast<float *>(packedSymbolBuffer);
   unsigned char *binaryBuffer = packedSymbolBuffer + metaDataSize;
 
-  encode(threadUserData, item.encoder.get(), metaBuffer, unpackedSymbolBuffer,
-         _antennaCount);
+  size_t binarySize = encodePacked(threadUserData, item.encoder.get(),
+                                   metaBuffer, binaryBuffer, _antennaCount,
+                                   blockIndex);
+  if (binarySize == 0) {
+    encode(threadUserData, item.encoder.get(), metaBuffer, unpackedSymbolBuffer,
+           _antennaCount, blockIndex);
+    BytePacker::pack(_bitsPerSymbol, binaryBuffer, unpackedSymbolBuffer,
+                     nSymbols);
+    binarySize = BytePacker::bufferSize(nSymbols, _bitsPerSymbol);
+  }
 
-  BytePacker::pack(_bitsPerSymbol, binaryBuffer, unpackedSymbolBuffer,
-                   nSymbols);
-
-  const size_t binarySize = BytePacker::bufferSize(nSymbols, _bitsPerSymbol);
   writeCompressedData(blockIndex, packedSymbolBuffer,
                       metaDataSize + binarySize);
 }

@@ -28,7 +28,7 @@ void DyscoWeightColumn::decode(TimeBlockBuffer<data_t> *buffer,
 void DyscoWeightColumn::encode(ThreadDataBase * /*threadData*/,
                                TimeBlockBuffer<data_t> *buffer,
                                float *metaBuffer, symbol_t *symbolBuffer,
-                               size_t /*nAntennae*/) {
+                               size_t /*nAntennae*/, uint64_t /*blockIndex*/) {
   _encoder->Encode(*buffer, metaBuffer, symbolBuffer);
 }
 

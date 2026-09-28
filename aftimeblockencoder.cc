@@ -1,6 +1,10 @@
 #include "aftimeblockencoder.h"
 
+#include "kernels/af_reference.h"
+
+#include <cstring>
 #include <random>
+#include <vector>
 
 namespace {
 void changeChannelFactor(std::vector<AFTimeBlockEncoder::DBufferRow> &data,
@@ -326,6 +330,29 @@ void AFTimeBlockEncoder::encode(
     }
     symbolBufferPtr += visPerRow * 2;
   }
+}
+
+void AFTimeBlockEncoder::EncodeWithCounterRng(
+    const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
+    float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
+    uint64_t seed, uint64_t blockIndex) {
+  const auto &rows = buffer.GetVector();
+  const size_t nRows = rows.size();
+  const size_t visPerRow = _nPol * _nChannels;
+  std::vector<float> interleaved(nRows * visPerRow * 2);
+  std::vector<int> ant1(nRows), ant2(nRows);
+  for (size_t r = 0; r != nRows; ++r) {
+    ant1[r] = static_cast<int>(rows[r].antenna1);
+    ant2[r] = static_cast<int>(rows[r].antenna2);
+    std::memcpy(interleaved.data() + r * visPerRow * 2,
+                rows[r].visibilities.data(), visPerRow * 2 * sizeof(float));
+  }
+  const std::vector<float> decValues = gausEncoder.DecodeValues();
+  dyscostman::gpu::cpuAfEncode(interleaved.data(), ant1.data(), ant2.data(),
+                               nRows, _nChannels, _nPol, antennaCount,
+                               decValues.data(), decValues.size(), seed,
+                               blockIndex, _fitToMaximum, metaBuffer,
+                               symbolBuffer);
 }
 
 template void AFTimeBlockEncoder::encode<true>(

@@ -141,7 +141,40 @@ class ThreadedDyscoColumn : public DyscoStManColumn {
 
   virtual void encode(ThreadDataBase *threadData,
                       TimeBlockBuffer<data_t> *buffer, float *metaBuffer,
-                      symbol_t *symbolBuffer, size_t nAntennae) = 0;
+                      symbol_t *symbolBuffer, size_t nAntennae,
+                      uint64_t blockIndex) = 0;
+
+  /**
+   * Optional accelerator fast path: encode and pack directly into
+   * @p packed.  Returns the number of packed bytes, or 0 if not supported.
+   */
+  virtual size_t encodePacked(ThreadDataBase *, TimeBlockBuffer<data_t> *,
+                              float *, unsigned char *, size_t, uint64_t) {
+    return 0;
+  }
+
+  /**
+   * Optional accelerator fast path: decode a whole packed block at once.
+   * Returns true when @p buffer was filled.
+   */
+  virtual bool decodePacked(TimeBlockBuffer<data_t> *, const unsigned char *,
+                            size_t, const int *, const int *, size_t, size_t,
+                            const float *) {
+    return false;
+  }
+
+  /**
+   * Decode an unpacked block row by row.  Default implementation calls
+   * decode() for every row.  Accelerators can override.
+   */
+  virtual void decodeBlock(TimeBlockBuffer<data_t> *buffer,
+                           const symbol_t *symbolBuffer, const int *ant1,
+                           const int *ant2, size_t nRows, size_t,
+                           const float *) {
+    for (size_t row = 0; row != nRows; ++row)
+      decode(buffer, symbolBuffer, row, static_cast<size_t>(ant1[row]),
+             static_cast<size_t>(ant2[row]));
+  }
 
   virtual size_t metaDataFloatCount(size_t nRow, size_t nPolarizations,
                                     size_t nChannels,

@@ -13,6 +13,7 @@
 
 #include "dyscodistribution.h"
 #include "dysconormalization.h"
+#include "dysco_random.h"
 #include "threadgroup.h"
 #include "uvector.h"
 
@@ -37,6 +38,15 @@ void register_dyscostman();
  * @author André Offringa
  */
 namespace dyscostman {
+
+/**
+ * Global default for the GPU backend.  Tools that open an existing compressed
+ * measurement set (e.g. the `decompress` tool) cannot reach the storage
+ * manager instance that casacore constructs internally, so they can set this
+ * global before opening the table to request GPU decoding.
+ */
+void SetGlobalGpuEnabled(bool enabled);
+bool GlobalGpuEnabled();
 
 class DyscoStManColumn;
 
@@ -123,6 +133,25 @@ class DyscoStMan : public casacore::DataManager {
   }
 
   void SetStaticSeed(bool staticSeed) { _staticSeed = staticSeed; }
+
+  /**
+   * Select the random generator used for quantization dithering.  Must be
+   * called before columns are added.
+   */
+  void SetRandomGenerator(RandomGenerator generator) {
+    _randomGenerator = generator;
+  }
+
+  /**
+   * Enable the CUDA backend for this storage manager (requires the library to
+   * be built with ENABLE_CUDA).  Must be called before columns are added.
+   */
+  void SetGpuEnabled(bool enabled) { _gpuEnabled = enabled; }
+
+  /// Enable/disable the AF fit-to-maximum post-normalization (default on).
+  void SetFitToMaximum(bool enabled) { _fitToMaximum = enabled; }
+
+  RandomGenerator GetRandomGenerator() const { return _randomGenerator; }
 
   /**
    * This constructor is called by Casa when it needs to create a DyscoStMan.
@@ -400,6 +429,9 @@ class DyscoStMan : public casacore::DataManager {
   Normalization _normalization;
   double _studentTNu, _distributionTruncation;
   bool _staticSeed;
+  RandomGenerator _randomGenerator;
+  bool _gpuEnabled;
+  bool _fitToMaximum;
 
   std::vector<std::unique_ptr<DyscoStManColumn>> _columns;
 };

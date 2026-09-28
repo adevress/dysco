@@ -33,6 +33,16 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
                   0);
   }
 
+  /**
+   * Bit-compatible counterpart of the GPU encoder: same normalization order
+   * as kernels K1..K6 and Philox dither as kernel K7, implemented by the
+   * shared CPU reference in kernels/af_reference.cc.
+   */
+  virtual void EncodeWithCounterRng(
+      const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
+      float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
+      uint64_t seed, uint64_t blockIndex) final override;
+
   virtual void InitializeDecode(const float *metaBuffer, size_t nRow,
                                 size_t nAntennae) final override;
 

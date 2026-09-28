@@ -3,6 +3,10 @@
 #include "rftimeblockencoder.h"
 #include "rowtimeblockencoder.h"
 
+#ifdef DYSCO_HAS_CUDA
+#include "gpu_af_time_block_encoder.h"
+#endif
+
 namespace dyscostman {
 
 void DyscoDataColumn::Prepare(DyscoDistribution distribution,
@@ -14,18 +18,6 @@ void DyscoDataColumn::Prepare(DyscoDistribution distribution,
   ThreadedDyscoColumn::Prepare(distribution, normalization, studentsTNu,
                                distributionTruncation);
   const size_t nPolarizations = shape()[0], nChannels = shape()[1];
-
-  switch (normalization) {
-    case Normalization::kAF:
-      _decoder.reset(new AFTimeBlockEncoder(nPolarizations, nChannels, true));
-      break;
-    case Normalization::kRF:
-      _decoder.reset(new RFTimeBlockEncoder(nPolarizations, nChannels));
-      break;
-    case Normalization::kRow:
-      _decoder.reset(new RowTimeBlockEncoder(nPolarizations, nChannels));
-      break;
-  }
 
   switch (distribution) {
     case GaussianDistribution:
@@ -47,6 +39,31 @@ void DyscoDataColumn::Prepare(DyscoDistribution distribution,
               1 << getBitsPerSymbol(), distributionTruncation, 1.0)));
       break;
   }
+
+  bool useGpu = false;
+#ifdef DYSCO_HAS_CUDA
+  useGpu = _gpuEnabled && normalization == Normalization::kAF;
+#endif
+  if (useGpu) {
+#ifdef DYSCO_HAS_CUDA
+    _decoder.reset(new GpuAFTimeBlockEncoder(
+        nPolarizations, nChannels, _gausEncoder->DecodeValues(),
+        getBitsPerSymbol(), _fitToMaximum));
+#endif
+  } else {
+    switch (normalization) {
+      case Normalization::kAF:
+        _decoder.reset(
+            new AFTimeBlockEncoder(nPolarizations, nChannels, _fitToMaximum));
+        break;
+      case Normalization::kRF:
+        _decoder.reset(new RFTimeBlockEncoder(nPolarizations, nChannels));
+        break;
+      case Normalization::kRow:
+        _decoder.reset(new RowTimeBlockEncoder(nPolarizations, nChannels));
+        break;
+    }
+  }
 }
 
 void DyscoDataColumn::initializeDecode(TimeBlockBuffer<data_t> * /*buffer*/,
@@ -61,20 +78,51 @@ void DyscoDataColumn::decode(TimeBlockBuffer<data_t> *buffer,
   _decoder->Decode(*_gausEncoder, *buffer, data, blockRow, a1, a2);
 }
 
+void DyscoDataColumn::decodeBlock(TimeBlockBuffer<data_t> *buffer,
+                                  const symbol_t *symbolBuffer,
+                                  const int *ant1, const int *ant2, size_t nRows,
+                                  size_t nAntennae, const float *meta) {
+  _decoder->DecodeBlock(*_gausEncoder, *buffer, symbolBuffer, ant1, ant2, nRows,
+                        nAntennae, meta);
+}
+
+bool DyscoDataColumn::decodePacked(TimeBlockBuffer<data_t> *buffer,
+                                   const unsigned char *packed,
+                                   size_t packedBytes, const int *ant1,
+                                   const int *ant2, size_t nRows,
+                                   size_t nAntennae, const float *meta) {
+  if (!_decoder) return false;
+  return _decoder->DecodePacked(*_gausEncoder, *buffer, packed, packedBytes,
+                                ant1, ant2, nRows, nAntennae, meta);
+}
+
 std::unique_ptr<ThreadedDyscoColumn<std::complex<float>>::ThreadDataBase>
 DyscoDataColumn::initializeEncodeThread() {
   const size_t nPolarizations = shape()[0], nChannels = shape()[1];
   std::unique_ptr<TimeBlockEncoder> encoder;
-  switch (_normalization) {
-    case Normalization::kAF:
-      encoder.reset(new AFTimeBlockEncoder(nPolarizations, nChannels, true));
-      break;
-    case Normalization::kRF:
-      encoder.reset(new RFTimeBlockEncoder(nPolarizations, nChannels));
-      break;
-    case Normalization::kRow:
-      encoder.reset(new RowTimeBlockEncoder(nPolarizations, nChannels));
-      break;
+  bool useGpu = false;
+#ifdef DYSCO_HAS_CUDA
+  useGpu = _gpuEnabled && _normalization == Normalization::kAF;
+#endif
+  if (useGpu) {
+#ifdef DYSCO_HAS_CUDA
+    encoder.reset(new GpuAFTimeBlockEncoder(
+        nPolarizations, nChannels, _gausEncoder->DecodeValues(),
+        getBitsPerSymbol(), _fitToMaximum));
+#endif
+  } else {
+    switch (_normalization) {
+      case Normalization::kAF:
+        encoder.reset(
+            new AFTimeBlockEncoder(nPolarizations, nChannels, _fitToMaximum));
+        break;
+      case Normalization::kRF:
+        encoder.reset(new RFTimeBlockEncoder(nPolarizations, nChannels));
+        break;
+      case Normalization::kRow:
+        encoder.reset(new RowTimeBlockEncoder(nPolarizations, nChannels));
+        break;
+    }
   }
   std::unique_ptr<ThreadData> newThreadData(new ThreadData(std::move(encoder)));
   // Seed every thread from a random number
@@ -87,10 +135,30 @@ DyscoDataColumn::initializeEncodeThread() {
 
 void DyscoDataColumn::encode(ThreadDataBase *threadData,
                              TimeBlockBuffer<data_t> *buffer, float *metaBuffer,
-                             symbol_t *symbolBuffer, size_t nAntennae) {
+                             symbol_t *symbolBuffer, size_t nAntennae,
+                             uint64_t blockIndex) {
   ThreadData &data = static_cast<ThreadData &>(*threadData);
-  data.encoder->EncodeWithDithering(*_gausEncoder, *buffer, metaBuffer,
-                                    symbolBuffer, nAntennae, data.rnd);
+  if (_randomGenerator == RandomGenerator::kPhilox) {
+    data.encoder->EncodeWithCounterRng(*_gausEncoder, *buffer, metaBuffer,
+                                       symbolBuffer, nAntennae, _philoxSeed,
+                                       blockIndex);
+  } else {
+    data.encoder->EncodeWithDithering(*_gausEncoder, *buffer, metaBuffer,
+                                      symbolBuffer, nAntennae, data.rnd);
+  }
+}
+
+size_t DyscoDataColumn::encodePacked(ThreadDataBase *threadData,
+                                     TimeBlockBuffer<data_t> *buffer,
+                                     float *metaBuffer, unsigned char *packed,
+                                     size_t nAntennae, uint64_t blockIndex) {
+  ThreadData &data = static_cast<ThreadData &>(*threadData);
+  size_t packedBytes = 0;
+  if (data.encoder->EncodePacked(*_gausEncoder, *buffer, metaBuffer, packed,
+                                 nAntennae, _philoxSeed, blockIndex,
+                                 packedBytes))
+    return packedBytes;
+  return 0;
 }
 
 size_t DyscoDataColumn::metaDataFloatCount(size_t nRows, size_t nPolarizations,
@@ -105,6 +173,10 @@ size_t DyscoDataColumn::symbolCount(size_t nRowsInBlock, size_t nPolarizations,
 }
 
 size_t DyscoDataColumn::defaultThreadCount() const {
+  if (_randomGenerator == RandomGenerator::kPhilox) {
+    // Counter-based dithering is thread-order independent.
+    return ThreadedDyscoColumn::defaultThreadCount();
+  }
   if (!_randomize) {
     std::cout
         << "Warning: using only one thread to avoid randomizing the results.\n";
