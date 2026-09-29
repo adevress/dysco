@@ -33,8 +33,12 @@ int main(int argc, char *argv[]) {
   StManModifier modifier(*ms);
 
   bool isDataReplaced = modifier.InitColumnWithDefaultStMan("DATA", false);
-  bool isWeightReplaced =
-      modifier.InitColumnWithDefaultStMan("WEIGHT_SPECTRUM", true);
+  // WEIGHT_SPECTRUM is optional: many measurement sets (e.g. SKA Low) do not
+  // have one, so only decompress it when present.
+  bool isWeightReplaced = false;
+  if (ms->tableDesc().isColumn("WEIGHT_SPECTRUM"))
+    isWeightReplaced =
+        modifier.InitColumnWithDefaultStMan("WEIGHT_SPECTRUM", true);
 
   if (isDataReplaced) modifier.MoveColumnData<casacore::Complex>("DATA");
   if (isWeightReplaced) modifier.MoveColumnData<float>("WEIGHT_SPECTRUM");

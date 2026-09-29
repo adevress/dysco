@@ -2,11 +2,15 @@
 // memory / transparent page migration) and the fixed pipeline of kernel
 // launches.  No computation happens here; this file only wires the individual
 // per-kernel files together.
+//
+// The managed buffers are exposed to the kernels as libcu++ views
+// (`cuda::std::span` / `cuda::std::mdspan`); this file is the only place where
+// the raw allocation pointers are turned into those views.
 
 #include "gpu_af_codec.h"
 
-#include "cuda_kernels.h"
 #include "../gpu_portability.h"
+#include "cuda_kernels.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -41,6 +45,13 @@ template <class T>
   T *raw = nullptr;
   DYSCO_MANAGED_ALLOC(&raw, count * sizeof(T));
   return ManagedBuffer<T>(raw);
+}
+
+/// Build the row-major 2D view the kernels expect from a flat buffer.
+template <class T>
+[[nodiscard]] MdSpan2D<T> asMatrix(T *data, std::size_t rows,
+                                   std::size_t cols) noexcept {
+  return MdSpan2D<T>(data, rows, cols);
 }
 }  // namespace
 
@@ -127,6 +138,10 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
                      dysco::span<unsigned char> packedOut) {
   Impl &s = *_impl;
   const dysco_stream_t stream = DYSCO_DEFAULT_STREAM;
+  const cuda::std::span<float> metaView(s.meta.get(),
+                                        s.visPerRow + s.nPol * s.nAnt);
+  const cuda::std::span<const int> ant1View(s.ant1.get(), s.nRows);
+  const cuda::std::span<const int> ant2View(s.ant2.get(), s.nRows);
 
   // Upload the block (transparent page migration: a plain CPU write to the
   // managed buffer is enough; pages move on first device access).
@@ -135,47 +150,67 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
   std::memcpy(s.ant1.get(), ant1.data(), s.nRows * sizeof(int));
   std::memcpy(s.ant2.get(), ant2.data(), s.nRows * sizeof(int));
 
-  k1_gather_convert({s.inInterleaved.get(), 2 * s.nVis}, s.nRows, s.visPerRow,
-                    {s.re.get(), s.nVis}, {s.im.get(), s.nVis}, stream);
+  k1_gather_convert(asMatrix(s.inInterleaved.get(), s.nVis, 2),
+                    cuda::std::span<double>(s.re.get(), s.nVis),
+                    cuda::std::span<double>(s.im.get(), s.nVis), stream);
 
-  k2_channel_rms({s.re.get(), s.nVis}, {s.im.get(), s.nVis}, s.nRows,
-                 s.visPerRow, {s.meta.get(), s.visPerRow}, stream);
-  k5a_apply_channel_norm({s.re.get(), s.nVis}, {s.im.get(), s.nVis},
-                         s.visPerRow, {s.meta.get(), s.visPerRow}, stream);
+  const MdSpan2D<double> re(s.re.get(), s.nRows, s.visPerRow);
+  const MdSpan2D<double> im(s.im.get(), s.nRows, s.visPerRow);
+
+  k2_channel_rms(asMatrix(static_cast<const double *>(s.re.get()), s.nRows,
+                          s.visPerRow),
+                 asMatrix(static_cast<const double *>(s.im.get()), s.nRows,
+                          s.visPerRow),
+                 cuda::std::span<float>(s.meta.get(), s.visPerRow), stream);
+  k5a_apply_channel_norm(cuda::std::span<double>(s.re.get(), s.nVis),
+                         cuda::std::span<double>(s.im.get(), s.nVis),
+                         s.visPerRow,
+                         cuda::std::span<const float>(s.meta.get(),
+                                                      s.visPerRow),
+                         stream);
 
   for (std::size_t pol = 0; pol != s.nPol; ++pol) {
-    k3_antenna_rms_matrix({s.re.get(), s.nVis}, {s.im.get(), s.nVis},
-                          {s.ant1.get(), s.nRows}, {s.ant2.get(), s.nRows},
-                          s.nRows, s.nChannels, s.nPol, s.nAnt, pol,
-                          {s.matrix.get(), s.nAnt * s.nAnt}, stream);
-    k4_antenna_gain_solve({s.matrix.get(), s.nAnt * s.nAnt}, s.nAnt,
-                          {s.rmsPerAnt.get(), s.nAnt}, stream);
-    k5b_apply_antenna_norm({s.re.get(), s.nVis}, {s.im.get(), s.nVis},
-                           {s.ant1.get(), s.nRows}, {s.ant2.get(), s.nRows},
-                           s.nRows, s.nChannels, s.nPol, pol,
-                           {s.rmsPerAnt.get(), s.nAnt}, stream);
+    k3_antenna_rms_matrix(asMatrix(static_cast<const double *>(s.re.get()),
+                                   s.nRows, s.visPerRow),
+                          asMatrix(static_cast<const double *>(s.im.get()),
+                                   s.nRows, s.visPerRow),
+                          ant1View, ant2View, s.nChannels, s.nPol, pol,
+                          MdSpan2D<double>(s.matrix.get(), s.nAnt, s.nAnt),
+                          stream);
+    k4_antenna_gain_solve(MdSpan2D<const double>(s.matrix.get(), s.nAnt,
+                                                 s.nAnt),
+                          cuda::std::span<double>(s.rmsPerAnt.get(), s.nAnt),
+                          stream);
+    k5b_apply_antenna_norm(re, im, ant1View, ant2View, s.nChannels, s.nPol,
+                           pol,
+                           cuda::std::span<const double>(s.rmsPerAnt.get(),
+                                                         s.nAnt),
+                           stream);
     // Store the antenna gains in the metadata block, in the same order as the
     // CPU encoder ([visPerRow + pol*nAnt + antenna]).
-    k4_store_antenna_gains({s.rmsPerAnt.get(), s.nAnt},
-                           {s.meta.get() + s.visPerRow + pol * s.nAnt, s.nAnt},
-                           stream);
+    k4_store_antenna_gains(
+        cuda::std::span<const double>(s.rmsPerAnt.get(), s.nAnt),
+        cuda::std::span<float>(s.meta.get() + s.visPerRow + pol * s.nAnt,
+                               s.nAnt),
+        stream);
   }
 
   if (fitToMaximum) {
-    k6_fit_to_max({s.re.get(), s.nVis}, {s.im.get(), s.nVis},
-                  {s.ant1.get(), s.nRows}, {s.ant2.get(), s.nRows}, s.nRows,
-                  s.nChannels, s.nPol, s.nAnt,
-                  {s.meta.get(), s.visPerRow + s.nPol * s.nAnt}, s.maxLevel(),
-                  stream);
+    k6_fit_to_max(re, im, ant1View, ant2View, s.nChannels, s.nPol, s.nAnt,
+                  metaView, s.maxLevel(), stream);
   }
 
   k7_quantize_dither(
-      {s.re.get(), s.nVis}, {s.im.get(), s.nVis},
-      {s.decValues.get(), s.decCount}, static_cast<std::uint32_t>(seed),
-      static_cast<std::uint32_t>(seed >> 32), blockIndex,
-      {s.symbols.get(), 2 * s.nVis}, stream);
-  k8_bit_pack({s.symbols.get(), 2 * s.nVis}, s.bits,
-              {s.packed.get(), s.packedBytes}, stream);
+      asMatrix(static_cast<const double *>(s.re.get()), s.nRows, s.visPerRow),
+      asMatrix(static_cast<const double *>(s.im.get()), s.nRows, s.visPerRow),
+      cuda::std::span<const float>(s.decValues.get(), s.decCount),
+      static_cast<std::uint32_t>(seed), static_cast<std::uint32_t>(seed >> 32),
+      blockIndex, cuda::std::span<unsigned int>(s.symbols.get(), 2 * s.nVis),
+      stream);
+  k8_bit_pack(cuda::std::span<const unsigned int>(s.symbols.get(), 2 * s.nVis),
+              s.bits, cuda::std::span<unsigned char>(s.packed.get(),
+                                                     s.packedBytes),
+              stream);
 
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(metaOut.data(), s.meta.get(),
@@ -184,8 +219,8 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
 }
 
 void AfCodec::decode(dysco::span<const unsigned char> packedIn,
-                     dysco::span<const float> metaIn,
-                     dysco::span<const int> ant1, dysco::span<const int> ant2,
+                     dysco::span<const float> metaIn, dysco::span<const int> ant1,
+                     dysco::span<const int> ant2,
                      dysco::span<float> interleavedOut) {
   Impl &s = *_impl;
   const dysco_stream_t stream = DYSCO_DEFAULT_STREAM;
@@ -198,13 +233,19 @@ void AfCodec::decode(dysco::span<const unsigned char> packedIn,
   std::memcpy(s.ant1.get(), ant1.data(), s.nRows * sizeof(int));
   std::memcpy(s.ant2.get(), ant2.data(), s.nRows * sizeof(int));
 
-  d1_bit_unpack({s.packed.get(), packedIn.size()}, s.bits,
-                {s.symbols.get(), 2 * s.nVis}, stream);
-  d2_dequantize({s.symbols.get(), 2 * s.nVis}, s.nRows, s.nChannels, s.nPol,
-                s.nAnt, {s.meta.get(), s.visPerRow + s.nPol * s.nAnt},
-                {s.ant1.get(), s.nRows}, {s.ant2.get(), s.nRows},
-                {s.decValues.get(), s.decCount}, {s.out.get(), 2 * s.nVis},
+  d1_bit_unpack(cuda::std::span<const unsigned char>(s.packed.get(),
+                                                     packedIn.size()),
+                s.bits,
+                cuda::std::span<unsigned int>(s.symbols.get(), 2 * s.nVis),
                 stream);
+  d2_dequantize(
+      asMatrix(static_cast<const unsigned int *>(s.symbols.get()), s.nVis, 2),
+      cuda::std::span<const float>(s.meta.get(), s.visPerRow + s.nPol * s.nAnt),
+      cuda::std::span<const int>(s.ant1.get(), s.nRows),
+      cuda::std::span<const int>(s.ant2.get(), s.nRows), s.nRows, s.nChannels,
+      s.nPol, s.nAnt,
+      cuda::std::span<const float>(s.decValues.get(), s.decCount),
+      asMatrix(s.out.get(), s.nVis, 2), stream);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(interleavedOut.data(), s.out.get(), 2 * s.nVis * sizeof(float));
 }
@@ -221,10 +262,13 @@ void quantize(dysco::span<const float> values,
   std::memcpy(dValues.get(), values.data(), count * sizeof(float));
   std::memcpy(dDecValues.get(), decValues.data(),
               decValues.size() * sizeof(float));
-  k7_quantize_flat({dValues.get(), count}, {dDecValues.get(), decValues.size()},
+  k7_quantize_flat(cuda::std::span<const float>(dValues.get(), count),
+                   cuda::std::span<const float>(dDecValues.get(),
+                                                decValues.size()),
                    static_cast<std::uint32_t>(seed),
                    static_cast<std::uint32_t>(seed >> 32), blockIndex,
-                   {dSymbols.get(), count}, DYSCO_DEFAULT_STREAM);
+                   cuda::std::span<unsigned int>(dSymbols.get(), count),
+                   DYSCO_DEFAULT_STREAM);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(symbols.data(), dSymbols.get(), count * sizeof(unsigned int));
 }
@@ -235,8 +279,10 @@ void pack(dysco::span<const unsigned int> symbols, unsigned bits,
   auto dPacked = allocateManaged<unsigned char>(packed.size());
   std::memcpy(dSymbols.get(), symbols.data(),
               symbols.size() * sizeof(unsigned int));
-  k8_bit_pack({dSymbols.get(), symbols.size()}, bits,
-              {dPacked.get(), packed.size()}, DYSCO_DEFAULT_STREAM);
+  k8_bit_pack(
+      cuda::std::span<const unsigned int>(dSymbols.get(), symbols.size()), bits,
+      cuda::std::span<unsigned char>(dPacked.get(), packed.size()),
+      DYSCO_DEFAULT_STREAM);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(packed.data(), dPacked.get(), packed.size());
 }
@@ -246,8 +292,10 @@ void unpack(dysco::span<const unsigned char> packed, unsigned bits,
   auto dPacked = allocateManaged<unsigned char>(packed.size());
   auto dSymbols = allocateManaged<unsigned int>(symbols.size());
   std::memcpy(dPacked.get(), packed.data(), packed.size());
-  d1_bit_unpack({dPacked.get(), packed.size()}, bits,
-                {dSymbols.get(), symbols.size()}, DYSCO_DEFAULT_STREAM);
+  d1_bit_unpack(
+      cuda::std::span<const unsigned char>(dPacked.get(), packed.size()), bits,
+      cuda::std::span<unsigned int>(dSymbols.get(), symbols.size()),
+      DYSCO_DEFAULT_STREAM);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(symbols.data(), dSymbols.get(),
               symbols.size() * sizeof(unsigned int));

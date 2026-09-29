@@ -3,57 +3,69 @@
 // value = decValues[symbol] * channelRms[ch,pol] * g_a1 * g_a2
 // with the NaN symbol (index == decCount) producing a NaN visibility, exactly
 // like the CPU `AFTimeBlockEncoder::Decode`.
+//
+// The kernel is launched with a 2D grid: `blockIdx.x` selects the row and
+// `blockIdx.y` the (channel,pol) within the row.  This removes the per-element
+// `i / visPerRow` 64-bit division of the original flat formulation; the
+// remaining index arithmetic is done in 32 bits.  The arithmetic itself (and
+// therefore the decoded values) is unchanged.
 
 #include "cuda_kernels.h"
+
+#include <cmath>
 
 namespace dyscostman {
 namespace gpu {
 
 namespace {
 
-__global__ void dequantizeKernel(const unsigned int *symbols, size_t nVis,
-                                 size_t visPerRow, size_t nPol, size_t nAnt,
-                                 const float *meta, const int *ant1,
-                                 const int *ant2, const float *decValues,
-                                 size_t decCount, float *out) {
-  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= nVis) return;
-  const size_t row = i / visPerRow;
-  const size_t rem = i % visPerRow;
-  const size_t ch = rem / nPol;
-  const size_t pol = rem % nPol;
+__global__ void dequantizeKernel(MdSpan2D<const unsigned int> symbols,
+                                 cuda::std::span<const float> meta,
+                                 cuda::std::span<const int> ant1,
+                                 cuda::std::span<const int> ant2,
+                                 std::size_t visPerRow, unsigned nPol,
+                                 std::size_t nAnt,
+                                 cuda::std::span<const float> decValues,
+                                 MdSpan2D<float> interleaved) {
+  const unsigned decCount = static_cast<unsigned>(decValues.size());
+  const std::size_t row = blockIdx.x;
+  const unsigned rem =
+      static_cast<unsigned>(blockIdx.y) * blockDim.x + threadIdx.x;
+  if (rem >= visPerRow) return;
+  const unsigned ch = rem / nPol;
+  const unsigned pol = rem % nPol;
+  const std::size_t i = row * visPerRow + rem;
   const double chRms = static_cast<double>(meta[ch * nPol + pol]);
   const double antFac =
       static_cast<double>(meta[visPerRow + pol * nAnt + ant1[row]]) *
       static_cast<double>(meta[visPerRow + pol * nAnt + ant2[row]]);
   const double factor = chRms * antFac;
-  const unsigned int sRe = symbols[i * 2];
-  const unsigned int sIm = symbols[i * 2 + 1];
+  const unsigned int sRe = symbols(i, 0);
+  const unsigned int sIm = symbols(i, 1);
   const double vRe =
       (sRe < decCount) ? static_cast<double>(decValues[sRe]) : nan("");
   const double vIm =
       (sIm < decCount) ? static_cast<double>(decValues[sIm]) : nan("");
-  out[i * 2] = static_cast<float>(vRe * factor);
-  out[i * 2 + 1] = static_cast<float>(vIm * factor);
+  interleaved(i, 0) = static_cast<float>(vRe * factor);
+  interleaved(i, 1) = static_cast<float>(vIm * factor);
 }
 
 }  // namespace
 
-void d2_dequantize(dysco::span<const unsigned int> symbols, std::size_t nRows,
+void d2_dequantize(MdSpan2D<const unsigned int> symbols,
+                   cuda::std::span<const float> meta,
+                   cuda::std::span<const int> ant1,
+                   cuda::std::span<const int> ant2, std::size_t nRows,
                    std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
-                   dysco::span<const float> meta, dysco::span<const int> ant1,
-                   dysco::span<const int> ant2,
-                   dysco::span<const float> decValues,
-                   dysco::span<float> interleaved, dysco_stream_t stream) {
+                   cuda::std::span<const float> decValues,
+                   MdSpan2D<float> interleaved, dysco_stream_t stream) {
   const std::size_t visPerRow = nChannels * nPol;
-  const std::size_t nVis = nRows * visPerRow;
-  const std::size_t decCount = decValues.size();
   constexpr unsigned kThreads = 256;
-  const auto blocks =
-      static_cast<unsigned>((nVis + kThreads - 1) / kThreads);
-  DYSCO_LAUNCH_1D(dequantizeKernel, blocks, kThreads, stream, symbols.data(),
-                  nVis, visPerRow, nPol, nAnt, meta.data(), ant1.data(),
-                  ant2.data(), decValues.data(), decCount, interleaved.data());
+  const dim3 grid(static_cast<unsigned>(nRows),
+                  static_cast<unsigned>((visPerRow + kThreads - 1) / kThreads));
+  DYSCO_LAUNCH_1D(dequantizeKernel, grid, kThreads, stream, symbols, meta, ant1,
+                  ant2, visPerRow, static_cast<unsigned>(nPol), nAnt,
+                  decValues, interleaved);
 }
 
 }  // namespace gpu

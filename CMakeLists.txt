@@ -45,6 +45,14 @@ set(DYSCO_GPU_SOURCES)
 if(ENABLE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
+  # The kernels rely on CCCL features that are only guaranteed from CUDA 12
+  # onwards (`cuda::std::mdspan`, `cuda::maximum<>`).
+  if(CUDAToolkit_VERSION VERSION_LESS "12.0")
+    message(
+      FATAL_ERROR
+        "The Dysco CUDA backend requires CUDA 12.0 or newer; found ${CUDAToolkit_VERSION}."
+    )
+  endif()
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED YES)
   add_compile_definitions(DYSCO_HAS_CUDA)
@@ -94,11 +102,17 @@ add_executable(mscompare tools/mscompare.cc)
 target_link_libraries(mscompare ${CASACORE_LIBRARIES}
                       ${CMAKE_THREAD_LIBS_INIT})
 
+# Extract one Measurement Set time block to the flat format read by dsbench.
+add_executable(msblockextract tools/msblockextract.cc)
+target_link_libraries(msblockextract ${CASACORE_LIBRARIES}
+                      ${CMAKE_THREAD_LIBS_INIT})
+
 if(ENABLE_CUDA)
   add_executable(dsbench kernels/cuda/bench_af_codec.cu ${DYSCO_GPU_SOURCES}
-                          kernels/af_reference.cc)
+                          kernels/af_reference.cc aftimeblockencoder.cc
+                          stochasticencoder.cc)
   target_include_directories(dsbench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(dsbench CUDA::cudart)
+  target_link_libraries(dsbench CUDA::cudart ${GSL_LIBRARIES})
 
   # Bit-compatibility test: CPU reference (Philox) vs GPU kernels.
   add_executable(dysco_gpu_test kernels/cuda/test_af_codec.cu

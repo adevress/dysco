@@ -16,15 +16,15 @@ namespace gpu {
 
 namespace {
 
-DYSCO_HD DYSCO_INLINE unsigned int quantizeDither(float value,
-                                                  const float *decValues,
-                                                  size_t decCount,
-                                                  unsigned int dither) {
-  if (!isfinite(value)) return static_cast<unsigned int>(decCount);
+[[nodiscard]] DYSCO_HD DYSCO_INLINE unsigned int quantizeDither(
+    float value, cuda::std::span<const float> decValues,
+    unsigned int dither) {
+  const std::size_t decCount = decValues.size();
+  if (!cuda::std::isfinite(value)) return static_cast<unsigned int>(decCount);
   // lower_bound over decValues: first index with decValues[index] >= value.
-  size_t lo = 0, hi = decCount;
+  std::size_t lo = 0, hi = decCount;
   while (lo < hi) {
-    const size_t mid = (lo + hi) >> 1;
+    const std::size_t mid = (lo + hi) >> 1;
     if (decValues[mid] < value)
       lo = mid + 1;
     else
@@ -37,75 +37,78 @@ DYSCO_HD DYSCO_INLINE unsigned int quantizeDither(float value,
   const float ditherMark =
       static_cast<float>(2147483648.0f * (value - leftValue) /
                          (rightValue - leftValue));
-  if (ditherMark > static_cast<float>(dither))
-    return static_cast<unsigned int>(lo);
-  else
-    return static_cast<unsigned int>(lo - 1);
+  return ditherMark > static_cast<float>(dither)
+             ? static_cast<unsigned int>(lo)
+             : static_cast<unsigned int>(lo - 1);
 }
 
 // Flat variant used by the tests: one symbol per input value, with the dither
 // indexed by the value index (the AF path uses 2*i / 2*i+1).
-__global__ void quantizeFlatKernel(const float *values, size_t count,
-                                   const float *decValues, size_t decCount,
+__global__ void quantizeFlatKernel(cuda::std::span<const float> values,
+                                   cuda::std::span<const float> decValues,
                                    uint32_t seedLo, uint32_t seedHi,
                                    uint64_t blockIndex,
-                                   unsigned int *symbols) {
-  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= count) return;
+                                   cuda::std::span<unsigned int> symbols) {
+  const std::size_t i =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= values.size()) return;
   const unsigned int dither =
       random123::ditherValue(seedLo, seedHi, blockIndex, i);
-  symbols[i] = quantizeDither(values[i], decValues, decCount, dither);
+  symbols[i] = quantizeDither(values[i], decValues, dither);
 }
 
-__global__ void quantizeDitherKernel(const double *re, const double *im,
-                                     size_t nVis, const float *decValues,
-                                     size_t decCount, uint32_t seedLo,
-                                     uint32_t seedHi, uint64_t blockIndex,
-                                     unsigned int *symbols) {
-  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+__global__ void quantizeDitherKernel(MdSpan2D<const double> re,
+                                     MdSpan2D<const double> im,
+                                     cuda::std::span<const float> decValues,
+                                     uint32_t seedLo, uint32_t seedHi,
+                                     uint64_t blockIndex,
+                                     cuda::std::span<unsigned int> symbols) {
+  const std::size_t visPerRow = re.extent(1);
+  const std::size_t nVis = re.extent(0) * visPerRow;
+  const std::size_t i =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= nVis) return;
+  const std::size_t row = i / visPerRow;
+  const std::size_t vi = i - row * visPerRow;
   const uint64_t base = static_cast<uint64_t>(i) * 2;
-  const unsigned int dRe = random123::ditherValue(
-      seedLo, seedHi, blockIndex, base);
-  const unsigned int dIm = random123::ditherValue(
-      seedLo, seedHi, blockIndex, base + 1);
-  symbols[base] = quantizeDither(static_cast<float>(re[i]), decValues, decCount,
-                                 dRe);
-  symbols[base + 1] = quantizeDither(static_cast<float>(im[i]), decValues,
-                                     decCount, dIm);
+  const unsigned int dRe = random123::ditherValue(seedLo, seedHi, blockIndex,
+                                                  base);
+  const unsigned int dIm = random123::ditherValue(seedLo, seedHi, blockIndex,
+                                                  base + 1);
+  symbols[base] =
+      quantizeDither(static_cast<float>(re(row, vi)), decValues, dRe);
+  symbols[base + 1] =
+      quantizeDither(static_cast<float>(im(row, vi)), decValues, dIm);
 }
 
 }  // namespace
 
-void k7_quantize_flat(dysco::span<const float> values,
-                      dysco::span<const float> decValues, std::uint32_t seedLo,
-                      std::uint32_t seedHi, std::uint64_t blockIndex,
-                      dysco::span<unsigned int> symbols,
+void k7_quantize_flat(cuda::std::span<const float> values,
+                      cuda::std::span<const float> decValues,
+                      std::uint32_t seedLo, std::uint32_t seedHi,
+                      std::uint64_t blockIndex,
+                      cuda::std::span<unsigned int> symbols,
                       dysco_stream_t stream) {
   constexpr unsigned kThreads = 256;
   const std::size_t count = values.size();
   const auto blocks =
       static_cast<unsigned>((count + kThreads - 1) / kThreads);
-  DYSCO_LAUNCH_1D(quantizeFlatKernel, blocks, kThreads, stream, values.data(),
-                  count, decValues.data(), decValues.size(), seedLo, seedHi,
-                  blockIndex, symbols.data());
+  DYSCO_LAUNCH_1D(quantizeFlatKernel, blocks, kThreads, stream, values,
+                  decValues, seedLo, seedHi, blockIndex, symbols);
 }
 
-void k7_quantize_dither(dysco::span<const double> re,
-                        dysco::span<const double> im,
-                        dysco::span<const float> decValues,
+void k7_quantize_dither(MdSpan2D<const double> re, MdSpan2D<const double> im,
+                        cuda::std::span<const float> decValues,
                         std::uint32_t seedLo, std::uint32_t seedHi,
                         std::uint64_t blockIndex,
-                        dysco::span<unsigned int> symbols,
+                        cuda::std::span<unsigned int> symbols,
                         dysco_stream_t stream) {
   constexpr unsigned kThreads = 256;
-  const std::size_t nVis = re.size();
-  const std::size_t decCount = decValues.size();
+  const std::size_t nVis = re.extent(0) * re.extent(1);
   const auto blocks =
       static_cast<unsigned>((nVis + kThreads - 1) / kThreads);
-  DYSCO_LAUNCH_1D(quantizeDitherKernel, blocks, kThreads, stream, re.data(),
-                  im.data(), nVis, decValues.data(), decCount, seedLo, seedHi,
-                  blockIndex, symbols.data());
+  DYSCO_LAUNCH_1D(quantizeDitherKernel, blocks, kThreads, stream, re, im,
+                  decValues, seedLo, seedHi, blockIndex, symbols);
 }
 
 }  // namespace gpu

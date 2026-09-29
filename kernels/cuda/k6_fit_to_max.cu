@@ -3,10 +3,9 @@
 // This file contains two implementations:
 //
 //   1. The default, fully grid-parallel *damped simultaneous* ("Jacobi")
-//      algorithm described in `instructions-fit-to-max-gpu.md`.  It replaces
-//      the old sequential greedy loop, which was the only sequential part of
-//      the encoder and ran as a single 256-thread block (≈0.5 % of the GPU,
-//      up to ~98 % of the total encode time).
+//      algorithm.  It replaces the old sequential greedy loop, which was the
+//      only sequential part of the encoder and ran as a single 256-thread
+//      block (≈0.5 % of the GPU, up to ~98 % of the total encode time).
 //
 //   2. The legacy greedy kernel, kept for A/B benchmarking and selected with
 //      the environment variable `DYSCO_K6_GREEDY=1`.  It is bit-identical to
@@ -33,8 +32,8 @@
 //   * reduces the per-channel maximum L and the per-antenna maximum M over
 //     cross-correlation rows only (autocorrelations are excluded, exactly as
 //     in the greedy version);
-//   * turns them into *damped* factors `G = cbrt(max(1, maxLevel/L))` and
-//     `F = cbrt(max(1, maxLevel/M))` (only upscaling: the `max(1, ·)` guard),
+//   * turns them into *damped* factors `G = cuda::std::cbrt(max(1, maxLevel/L))` and
+//     `F = cuda::std::cbrt(max(1, maxLevel/M))` (only upscaling: the `max(1, ·)` guard),
 //     updating the metadata by dividing by the factor;
 //   * applies `G · F_a · F_b` to every element, including autocorrelations
 //     (whose antenna factor therefore appears twice, i.e. `F²`).
@@ -45,8 +44,20 @@
 // can ever exceed `maxLevel`, and since every factor is ≥ 1 the total sum of
 // absolute values is monotonically non-decreasing.  The log-headroom shrinks
 // geometrically ((2/3)^R), so a handful of rounds is enough.  Every phase is a
-// grid-stride pass over the data and reductions use `atomicMax` (order
+// grid-stride pass over the data and reductions use atomic maxima (order
 // independent, therefore deterministic run-to-run).
+//
+// ---------------------------------------------------------------------------
+// Modernization / optimization notes
+// ---------------------------------------------------------------------------
+// The per-round reductions used to issue three *global* `atomicMax` operations
+// per element, which made K6 the dominant GPU cost.  They now first aggregate
+// into a small block-local shared-memory histogram (`cuda::atomic_ref` with
+// `thread_scope_block`, libcu++) and flush that histogram to global memory once
+// per block.  The grid is sized through
+// `cudaOccupancyMaxActiveBlocksPerMultiprocessor` so it stays fully resident;
+// the number of global atomics drops by orders of magnitude while the result
+// is unchanged (a maximum is associative and commutative).
 
 #include "cuda_kernels.h"
 
@@ -59,67 +70,61 @@ namespace gpu {
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Device helpers
-// ---------------------------------------------------------------------------
-
-/// Component measure used by the greedy encoder: `max(|re|, |im|)`, written in
-/// the same signed form as `AFTimeBlockEncoder::fitToMaximum` so that the
-/// non-finite handling matches exactly.
-__device__ __forceinline__ double comp(double r, double i) {
-  return fmax(fmax(r, i), -fmin(r, i));
-}
-
-/// `atomicMax` for *non-negative* doubles.  The IEEE-754 bit pattern of a
-/// non-negative double is order-isomorphic to an unsigned 64-bit integer, so
-/// reinterpreting as `unsigned long long` makes the integer `atomicMax` compute
-/// the double maximum.  `comp()` is always ≥ 0.  Being a maximum, the result is
-/// independent of the order in which threads contribute (deterministic).
-__device__ __forceinline__ void atomicMaxNonNeg(double *addr, double value) {
-  atomicMax(reinterpret_cast<unsigned long long *>(addr),
-            static_cast<unsigned long long>(__double_as_longlong(value)));
-}
+constexpr unsigned kK6Block = 256;
+constexpr unsigned kMaxGridBlocks = 4096;
 
 // ---------------------------------------------------------------------------
 // Phase A — exact per-channel normalization to maxLevel
 // ---------------------------------------------------------------------------
 
 /// Reduces the per-visibility (channel×pol) maximum over cross-correlation
-/// rows.  `L` must be zeroed beforehand.
-__global__ void k6a_reduce_channel_max(const double *__restrict__ re,
-                                       const double *__restrict__ im,
-                                       const int *__restrict__ ant1,
-                                       const int *__restrict__ ant2,
-                                       std::size_t nRows,
-                                       std::size_t visPerRow,
-                                       double *__restrict__ L) {
-  const std::size_t n = nRows * visPerRow;
+/// rows.  `L` must be zeroed beforehand.  The block-local maxima are gathered
+/// in shared memory before a single global atomic per entry per block.
+__global__ void k6a_reduce_channel_max(MdSpan2D<const double> re,
+                                       MdSpan2D<const double> im,
+                                       cuda::std::span<const int> ant1,
+                                       cuda::std::span<const int> ant2,
+                                       cuda::std::span<double> L) {
+  const std::size_t visPerRow = re.extent(1);
+  extern __shared__ cuda::std::uint64_t sharedKeys[];
+  for (std::size_t vi = threadIdx.x; vi < visPerRow; vi += kK6Block)
+    sharedKeys[vi] = 0;
+  __syncthreads();
+
+  const std::size_t n = re.extent(0) * visPerRow;
   const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * blockDim.x;
+      static_cast<std::size_t>(gridDim.x) * kK6Block;
   for (std::size_t idx =
-           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+           static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
        idx < n; idx += stride) {
     const std::size_t row = idx / visPerRow;
     if (ant1[row] == ant2[row]) continue;  // skip autocorrelations
-    const double c = comp(re[idx], im[idx]);
-    if (!isfinite(c)) continue;
-    atomicMaxNonNeg(&L[idx - row * visPerRow], c);
+    const std::size_t vi = idx - row * visPerRow;
+    const double c = componentMax(re(row, vi), im(row, vi));
+    if (!cuda::std::isfinite(c)) continue;
+    atomicMaxKeyBlock(&sharedKeys[vi], doubleToMaxKey(c));
   }
+  __syncthreads();
+
+  for (std::size_t vi = threadIdx.x; vi < visPerRow; vi += kK6Block)
+    if (sharedKeys[vi] != 0)
+      atomicMaxNonNegative(&L[vi], maxKeyToDouble(sharedKeys[vi]));
 }
 
 /// Computes the phase-A factor `maxLevel / L[vi]` (no `max(1,·)` clamp: phase A
 /// may downscale data that already exceeds maxLevel), divides the channel
 /// metadata by it, and scales every element — including autocorrelations.
-__global__ void k6a_apply_channel_fit(double *__restrict__ re,
-                                      double *__restrict__ im,
-                                      std::size_t n, std::size_t visPerRow,
-                                      const double *__restrict__ L,
-                                      float *__restrict__ meta,
+__global__ void k6a_apply_channel_fit(MdSpan2D<double> re,
+                                      MdSpan2D<double> im,
+                                      cuda::std::span<const double> L,
+                                      cuda::std::span<float> meta,
                                       double maxLevel) {
+  const std::size_t visPerRow = re.extent(1);
+  const std::size_t n = re.extent(0) * visPerRow;
   const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * blockDim.x;
+      static_cast<std::size_t>(gridDim.x) * kK6Block;
   const std::size_t start =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+      static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
 
   // Metadata: only the first `visPerRow` global threads participate.
   for (std::size_t vi = start; vi < visPerRow; vi += stride) {
@@ -129,11 +134,12 @@ __global__ void k6a_apply_channel_fit(double *__restrict__ re,
   }
   // Data: all threads, all rows.
   for (std::size_t i = start; i < n; i += stride) {
-    const std::size_t vi = i % visPerRow;
+    const std::size_t row = i / visPerRow;
+    const std::size_t vi = i - row * visPerRow;
     const double l = L[vi];
     const double g0 = (maxLevel == 0.0 || l == 0.0) ? 1.0 : maxLevel / l;
-    re[i] *= g0;
-    im[i] *= g0;
+    re(row, vi) *= g0;
+    im(row, vi) *= g0;
   }
 }
 
@@ -142,22 +148,34 @@ __global__ void k6a_apply_channel_fit(double *__restrict__ re,
 // ---------------------------------------------------------------------------
 
 /// Per-round reduction: channel maxima `L` and antenna maxima `M` over
-/// cross-correlation rows.  Both must be zeroed beforehand.
-__global__ void k6b_reduce(const double *__restrict__ re,
-                           const double *__restrict__ im,
-                           const int *__restrict__ ant1,
-                           const int *__restrict__ ant2, std::size_t nRows,
-                           std::size_t nChannels, std::size_t nPol,
-                           std::size_t nAnt, double *__restrict__ L,
-                           double *__restrict__ M,
-                           const int *__restrict__ doneFlag) {
-  if (*doneFlag) return;  // converged: remaining rounds are no-ops
-  const std::size_t visPerRow = nChannels * nPol;
-  const std::size_t n = nRows * visPerRow;
+/// cross-correlation rows.  Both must be zeroed beforehand.  Both are gathered
+/// in one shared-memory histogram per block, then flushed with one global
+/// atomic per entry per block.
+__global__ void k6b_reduce(MdSpan2D<const double> re,
+                           MdSpan2D<const double> im,
+                           cuda::std::span<const int> ant1,
+                           cuda::std::span<const int> ant2,
+                           std::size_t nPol, std::size_t nAnt,
+                           cuda::std::span<double> L,
+                           cuda::std::span<double> M,
+                           cuda::std::span<int, 1> doneFlag) {
+  if (doneFlag[0]) return;  // converged: remaining rounds are no-ops
+  const std::size_t visPerRow = re.extent(1);
+  const std::size_t nL = visPerRow;
+  const std::size_t nM = nPol * nAnt;
+
+  extern __shared__ cuda::std::uint64_t sharedKeys[];
+  cuda::std::uint64_t *sL = sharedKeys;
+  cuda::std::uint64_t *sM = sharedKeys + nL;
+  for (std::size_t i = threadIdx.x; i < nL; i += kK6Block) sL[i] = 0;
+  for (std::size_t i = threadIdx.x; i < nM; i += kK6Block) sM[i] = 0;
+  __syncthreads();
+
+  const std::size_t n = re.extent(0) * visPerRow;
   const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * blockDim.x;
+      static_cast<std::size_t>(gridDim.x) * kK6Block;
   for (std::size_t idx =
-           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+           static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
        idx < n; idx += stride) {
     const std::size_t row = idx / visPerRow;
     const int a1 = ant1[row];
@@ -165,68 +183,77 @@ __global__ void k6b_reduce(const double *__restrict__ re,
     if (a1 == a2) continue;  // skip autocorrelations
     const std::size_t vi = idx - row * visPerRow;  // = ch*nPol + pol
     const std::size_t pol = vi % nPol;
-    const double c = comp(re[idx], im[idx]);
-    if (!isfinite(c)) continue;
-    atomicMaxNonNeg(&L[vi], c);
-    atomicMaxNonNeg(&M[pol * nAnt + static_cast<std::size_t>(a1)], c);
-    atomicMaxNonNeg(&M[pol * nAnt + static_cast<std::size_t>(a2)], c);
+    const double c = componentMax(re(row, vi), im(row, vi));
+    if (!cuda::std::isfinite(c)) continue;
+    const cuda::std::uint64_t key = doubleToMaxKey(c);
+    atomicMaxKeyBlock(&sL[vi], key);
+    atomicMaxKeyBlock(&sM[pol * nAnt + static_cast<std::size_t>(a1)], key);
+    atomicMaxKeyBlock(&sM[pol * nAnt + static_cast<std::size_t>(a2)], key);
   }
+  __syncthreads();
+
+  for (std::size_t i = threadIdx.x; i < nL; i += kK6Block)
+    if (sL[i] != 0)
+      atomicMaxNonNegative(&L[i], maxKeyToDouble(sL[i]));
+  for (std::size_t i = threadIdx.x; i < nM; i += kK6Block)
+    if (sM[i] != 0)
+      atomicMaxNonNegative(&M[i], maxKeyToDouble(sM[i]));
 }
 
 /// Per-round factor computation.  `L`/`M` are overwritten in place with the
 /// damped factors `G`/`F`; the metadata is divided by them; `progressFlag` is
 /// atomically raised while any axis still has meaningful headroom.
-__global__ void k6b_factors(double *__restrict__ L, double *__restrict__ M,
-                            std::size_t nChPol, std::size_t nPolAnt,
-                            float *__restrict__ meta, std::size_t visPerRow,
-                            double maxLevel, double epsChannel,
-                            double epsAntenna, int *__restrict__ progressFlag,
-                            const int *__restrict__ doneFlag) {
-  if (*doneFlag) return;
+__global__ void k6b_factors(cuda::std::span<double> L,
+                            cuda::std::span<double> M, std::size_t nChPol,
+                            std::size_t nPolAnt, cuda::std::span<float> meta,
+                            std::size_t visPerRow, double maxLevel,
+                            double epsChannel, double epsAntenna,
+                            cuda::std::span<int, 1> progressFlag,
+                            cuda::std::span<const int, 1> doneFlag) {
+  if (doneFlag[0]) return;
   const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * blockDim.x;
+      static_cast<std::size_t>(gridDim.x) * kK6Block;
   const std::size_t start =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+      static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
   int progress = 0;
 
   for (std::size_t vi = start; vi < nChPol; vi += stride) {
     const double l = L[vi];
     const double full =
-        (maxLevel != 0.0 && l > 0.0) ? fmax(1.0, maxLevel / l) : 1.0;
+        (maxLevel != 0.0 && l > 0.0) ? cuda::std::fmax(1.0, maxLevel / l) : 1.0;
     if (full > 1.0 + epsChannel) progress = 1;
-    const double g = cbrt(full);
+    const double g = cuda::std::cbrt(full);
     L[vi] = g;  // now the factor, not the maximum
     meta[vi] = static_cast<float>(static_cast<double>(meta[vi]) / g);
   }
   for (std::size_t ai = start; ai < nPolAnt; ai += stride) {
     const double m = M[ai];
     const double full =
-        (maxLevel != 0.0 && m > 0.0) ? fmax(1.0, maxLevel / m) : 1.0;
+        (maxLevel != 0.0 && m > 0.0) ? cuda::std::fmax(1.0, maxLevel / m) : 1.0;
     if (full > 1.0 + epsAntenna) progress = 1;
-    const double f = cbrt(full);
+    const double f = cuda::std::cbrt(full);
     M[ai] = f;
     meta[visPerRow + ai] =
         static_cast<float>(static_cast<double>(meta[visPerRow + ai]) / f);
   }
 
-  if (progress) atomicOr(progressFlag, 1);
+  if (progress) atomicOrDevice(&progressFlag[0], 1);
 }
 
 /// Per-round elementwise application of `G · F_{a1} · F_{a2}` to all elements.
-__global__ void k6b_apply(double *__restrict__ re, double *__restrict__ im,
-                          const int *__restrict__ ant1,
-                          const int *__restrict__ ant2, std::size_t nRows,
-                          std::size_t nChannels, std::size_t nPol,
-                          std::size_t nAnt, const double *__restrict__ G,
-                          const double *__restrict__ F,
-                          const int *__restrict__ doneFlag) {
-  if (*doneFlag) return;
-  const std::size_t visPerRow = nChannels * nPol;
-  const std::size_t n = nRows * visPerRow;
+__global__ void k6b_apply(MdSpan2D<double> re, MdSpan2D<double> im,
+                          cuda::std::span<const int> ant1,
+                          cuda::std::span<const int> ant2, std::size_t nPol,
+                          std::size_t nAnt, cuda::std::span<const double> G,
+                          cuda::std::span<const double> F,
+                          cuda::std::span<const int, 1> doneFlag) {
+  if (doneFlag[0]) return;
+  const std::size_t visPerRow = re.extent(1);
+  const std::size_t n = re.extent(0) * visPerRow;
   const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * blockDim.x;
+      static_cast<std::size_t>(gridDim.x) * kK6Block;
   for (std::size_t idx =
-           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+           static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
        idx < n; idx += stride) {
     const std::size_t row = idx / visPerRow;
     const std::size_t vi = idx - row * visPerRow;
@@ -237,18 +264,18 @@ __global__ void k6b_apply(double *__restrict__ re, double *__restrict__ im,
         G[vi] *
         F[pol * nAnt + static_cast<std::size_t>(ant1[row])] *
         F[pol * nAnt + static_cast<std::size_t>(ant2[row])];
-    re[idx] *= scale;
-    im[idx] *= scale;
+    re(row, vi) *= scale;
+    im(row, vi) *= scale;
   }
 }
 
 /// Tiny end-of-round kernel: decides whether the next round is needed.  Kept
 /// separate from `k6b_apply` so that no block of the apply kernel can observe
 /// the new `doneFlag` and skip its share of the work.
-__global__ void k6b_mark_done(int *__restrict__ doneFlag,
-                              const int *__restrict__ progressFlag) {
+__global__ void k6b_mark_done(cuda::std::span<int, 1> doneFlag,
+                              cuda::std::span<const int, 1> progressFlag) {
   if (threadIdx.x == 0 && blockIdx.x == 0)
-    *doneFlag = (*progressFlag == 0) ? 1 : 0;
+    doneFlag[0] = (progressFlag[0] == 0) ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,99 +295,95 @@ __global__ void k6b_mark_done(int *__restrict__ doneFlag,
 //
 // Per-antenna reductions use a CSR list of the rows each antenna participates
 // in, which removes an O(nAnt) factor compared to a per-antenna full scan.
-__global__ void fitToMaxKernelGreedy(double *re, double *im, const int *ant1,
-                                     const int *ant2, size_t nRows,
-                                     size_t nChannels, size_t nPol, size_t nAnt,
-                                     float *meta, double maxLevel,
-                                     const int *csrRow,
-                                     const size_t *csrOffset) {
+__global__ void fitToMaxKernelGreedy(
+    MdSpan2D<double> re, MdSpan2D<double> im,
+    cuda::std::span<const int> ant1, cuda::std::span<const int> ant2,
+    std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
+    cuda::std::span<float> meta, double maxLevel,
+    cuda::std::span<const int> csrRow,
+    cuda::std::span<const std::size_t> csrOffset) {
   extern __shared__ double smem[];
-  const size_t visPerRow = nChannels * nPol;
+  const std::size_t visPerRow = re.extent(1);
+  const std::size_t nRows = re.extent(0);
   double *factorCh = smem;                   // visPerRow
   double *largestCh = factorCh + visPerRow;  // nChannels
   double *increaseCh = largestCh + nChannels;  // nChannels
   double *maxComp = increaseCh + nChannels;    // nAnt
   double *increaseAnt = maxComp + nAnt;        // nAnt
   double *sel = increaseAnt + nAnt;  // 5 (doAntenna,index,factor,progressing,apply)
-  const size_t tid = threadIdx.x;
-  const size_t nth = blockDim.x;
+  const std::size_t tid = threadIdx.x;
+  const std::size_t nth = blockDim.x;
 
   // ---- step A: scale every channel to the maximum encodable value ----
-  for (size_t vi = tid; vi < visPerRow; vi += nth) {
+  for (std::size_t vi = tid; vi < visPerRow; vi += nth) {
     double best = 0.0;
-    for (size_t row = 0; row != nRows; ++row) {
+    for (std::size_t row = 0; row != nRows; ++row) {
       if (ant1[row] != ant2[row]) {
-        const size_t idx = row * visPerRow + vi;
-        const double r = re[idx], v = im[idx];
-        const double local = fmax(fmax(r, v), -fmin(r, v));
-        if (isfinite(local) && local > best) best = local;
+        const double local = componentMax(re(row, vi), im(row, vi));
+        if (cuda::std::isfinite(local) && local > best) best = local;
       }
     }
     factorCh[vi] = (maxLevel == 0.0 || best == 0.0) ? 1.0 : maxLevel / best;
   }
   __syncthreads();
-  for (size_t vi = tid; vi < visPerRow; vi += nth)
+  for (std::size_t vi = tid; vi < visPerRow; vi += nth)
     meta[vi] = static_cast<float>(static_cast<double>(meta[vi]) / factorCh[vi]);
-  for (size_t idx = tid; idx < nRows * visPerRow; idx += nth) {
-    const size_t vi = idx % visPerRow;
-    re[idx] *= factorCh[vi];
-    im[idx] *= factorCh[vi];
-  }
+  for (std::size_t row = 0; row != nRows; ++row)
+    for (std::size_t vi = tid; vi < visPerRow; vi += nth) {
+      re(row, vi) *= factorCh[vi];
+      im(row, vi) *= factorCh[vi];
+    }
   __syncthreads();
 
-  for (size_t pol = 0; pol != nPol; ++pol) {
+  for (std::size_t pol = 0; pol != nPol; ++pol) {
     int progressing = 1;
     while (progressing) {
       // channel candidates
-      for (size_t c = tid; c < nChannels; c += nth) {
-        const size_t vi = c * nPol + pol;
+      for (std::size_t c = tid; c < nChannels; c += nth) {
+        const std::size_t vi = c * nPol + pol;
         double largest = 0.0;
-        for (size_t row = 0; row != nRows; ++row) {
+        for (std::size_t row = 0; row != nRows; ++row) {
           if (ant1[row] != ant2[row]) {
-            const size_t idx = row * visPerRow + vi;
-            const double r = re[idx], v = im[idx];
-            const double local = fmax(fmax(r, v), -fmin(r, v));
-            if (isfinite(local) && local > largest) largest = local;
+            const double local = componentMax(re(row, vi), im(row, vi));
+            if (cuda::std::isfinite(local) && local > largest) largest = local;
           }
         }
         largestCh[c] = largest;
         const double f = (largest == 0.0) ? 0.0 : (maxLevel / largest - 1.0);
         double increase = 0.0;
-        for (size_t row = 0; row != nRows; ++row) {
+        for (std::size_t row = 0; row != nRows; ++row) {
           if (ant1[row] != ant2[row]) {
-            const size_t idx = row * visPerRow + vi;
-            const double av = fabs(re[idx] * f) + fabs(im[idx] * f);
-            if (isfinite(av)) increase += av;
+            const double av = cuda::std::fabs(re(row, vi) * f) + cuda::std::fabs(im(row, vi) * f);
+            if (cuda::std::isfinite(av)) increase += av;
           }
         }
         increaseCh[c] = increase;
       }
       __syncthreads();
       // antenna candidates
-      for (size_t a = tid; a < nAnt; a += nth) {
+      for (std::size_t a = tid; a < nAnt; a += nth) {
         double best = 0.0;
-        for (size_t e = csrOffset[a]; e != csrOffset[a + 1]; ++e) {
-          const size_t row = static_cast<size_t>(csrRow[e]);
-          for (size_t channel = 0; channel != nChannels; ++channel) {
-            const size_t idx = row * visPerRow + channel * nPol + pol;
-            const double r = re[idx], v = im[idx];
-            const double local = fmax(fmax(r, v), -fmin(r, v));
-            if (isfinite(local) && local > best) best = local;
+        for (std::size_t e = csrOffset[a]; e != csrOffset[a + 1]; ++e) {
+          const std::size_t row = static_cast<std::size_t>(csrRow[e]);
+          for (std::size_t channel = 0; channel != nChannels; ++channel) {
+            const std::size_t vi = channel * nPol + pol;
+            const double local = componentMax(re(row, vi), im(row, vi));
+            if (cuda::std::isfinite(local) && local > best) best = local;
           }
         }
         maxComp[a] = best;
       }
       __syncthreads();
-      for (size_t a = tid; a < nAnt; a += nth) {
+      for (std::size_t a = tid; a < nAnt; a += nth) {
         const double f =
             (maxComp[a] == 0.0) ? 0.0 : (maxLevel / maxComp[a] - 1.0);
         double acc = 0.0;
-        for (size_t e = csrOffset[a]; e != csrOffset[a + 1]; ++e) {
-          const size_t row = static_cast<size_t>(csrRow[e]);
-          for (size_t channel = 0; channel != nChannels; ++channel) {
-            const size_t idx = row * visPerRow + channel * nPol + pol;
-            const double av = fabs(re[idx] * f) + fabs(im[idx] * f);
-            if (isfinite(av)) acc += av;
+        for (std::size_t e = csrOffset[a]; e != csrOffset[a + 1]; ++e) {
+          const std::size_t row = static_cast<std::size_t>(csrRow[e]);
+          for (std::size_t channel = 0; channel != nChannels; ++channel) {
+            const std::size_t vi = channel * nPol + pol;
+            const double av = cuda::std::fabs(re(row, vi) * f) + cuda::std::fabs(im(row, vi) * f);
+            if (cuda::std::isfinite(av)) acc += av;
           }
         }
         increaseAnt[a] = acc;
@@ -370,8 +393,8 @@ __global__ void fitToMaxKernelGreedy(double *re, double *im, const int *ant1,
       // selection, strictly in the CPU order
       if (tid == 0) {
         double bestChannelIncrease = 0.0, channelFactor = 1.0;
-        size_t bestChannel = 0;
-        for (size_t c = 0; c != nChannels; ++c) {
+        std::size_t bestChannel = 0;
+        for (std::size_t c = 0; c != nChannels; ++c) {
           if (increaseCh[c] > bestChannelIncrease) {
             bestChannelIncrease = increaseCh[c];
             bestChannel = c;
@@ -381,9 +404,9 @@ __global__ void fitToMaxKernelGreedy(double *re, double *im, const int *ant1,
             channelFactor = f + 1.0;
           }
         }
-        size_t bestAntenna = 0;
+        std::size_t bestAntenna = 0;
         double bestAntennaIncrease = 0.0;
-        for (size_t a = 0; a != nAnt; ++a) {
+        for (std::size_t a = 0; a != nAnt; ++a) {
           if (increaseAnt[a] > bestAntennaIncrease) {
             bestAntennaIncrease = increaseAnt[a];
             bestAntenna = a;
@@ -391,7 +414,7 @@ __global__ void fitToMaxKernelGreedy(double *re, double *im, const int *ant1,
         }
         int doAntenna, apply, prog;
         double factor;
-        size_t index;
+        std::size_t index;
         if (bestAntennaIncrease > bestChannelIncrease) {
           factor = (maxComp[bestAntenna] == 0.0)
                        ? 1.0
@@ -416,44 +439,43 @@ __global__ void fitToMaxKernelGreedy(double *re, double *im, const int *ant1,
         // metadata is only updated when the factor is applied
         if (apply) {
           if (doAntenna) {
-            const size_t mi = nChannels * nPol + nAnt * pol + index;
-            meta[mi] = static_cast<float>(
-                static_cast<double>(meta[mi]) / factor);
+            const std::size_t mi = nChannels * nPol + nAnt * pol + index;
+            meta[mi] =
+                static_cast<float>(static_cast<double>(meta[mi]) / factor);
           } else {
-            const size_t vi = index * nPol + pol;
-            meta[vi] = static_cast<float>(
-                static_cast<double>(meta[vi]) / factor);
+            const std::size_t vi = index * nPol + pol;
+            meta[vi] =
+                static_cast<float>(static_cast<double>(meta[vi]) / factor);
           }
         }
       }
       __syncthreads();
 
       const int doAntenna = static_cast<int>(sel[0]);
-      const size_t index = static_cast<size_t>(sel[1]);
+      const std::size_t index = static_cast<std::size_t>(sel[1]);
       const double factor = sel[2];
       progressing = static_cast<int>(sel[3]);
       const int apply = static_cast<int>(sel[4]);
       if (apply) {
         if (doAntenna) {
-          for (size_t row = tid; row < nRows; row += nth) {
-            const size_t a1 = static_cast<size_t>(ant1[row]);
-            const size_t a2 = static_cast<size_t>(ant2[row]);
+          for (std::size_t row = tid; row < nRows; row += nth) {
+            const std::size_t a1 = static_cast<std::size_t>(ant1[row]);
+            const std::size_t a2 = static_cast<std::size_t>(ant2[row]);
             unsigned count = 0;
             if (a1 == index) ++count;
             if (a2 == index) ++count;
             for (unsigned repeat = 0; repeat != count; ++repeat)
-              for (size_t ch = 0; ch != nChannels; ++ch) {
-                const size_t idx = row * visPerRow + ch * nPol + pol;
-                re[idx] *= factor;
-                im[idx] *= factor;
+              for (std::size_t ch = 0; ch != nChannels; ++ch) {
+                const std::size_t vi = ch * nPol + pol;
+                re(row, vi) *= factor;
+                im(row, vi) *= factor;
               }
           }
         } else {
-          const size_t vi = index * nPol + pol;
-          for (size_t row = tid; row < nRows; row += nth) {
-            const size_t idx = row * visPerRow + vi;
-            re[idx] *= factor;
-            im[idx] *= factor;
+          const std::size_t vi = index * nPol + pol;
+          for (std::size_t row = tid; row < nRows; row += nth) {
+            re(row, vi) *= factor;
+            im(row, vi) *= factor;
           }
         }
       }
@@ -473,6 +495,33 @@ unsigned gridFor(std::size_t n, unsigned threads) {
   return static_cast<unsigned>(blocks == 0 ? 1 : blocks);
 }
 
+/// Size a grid-stride launch to the number of blocks that actually fit on the
+/// device (occupancy API), capped by the amount of work.  This keeps the
+/// shared-memory reduction grid resident and avoids over-subscription.
+template <class Kernel>
+unsigned residentGrid(Kernel kernel, std::size_t n, unsigned threads,
+                      std::size_t sharedBytes) {
+  const std::size_t needed = (n + threads - 1) / threads;
+  int device = 0;
+  int smCount = 0;
+  int blocksPerSm = 0;
+  if (cudaGetDevice(&device) == cudaSuccess &&
+      cudaDeviceGetAttribute(&smCount, cudaDevAttrMultiProcessorCount,
+                             device) == cudaSuccess &&
+      cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerSm, kernel,
+                                                    threads,
+                                                    sharedBytes) == cudaSuccess &&
+      blocksPerSm > 0) {
+    const std::size_t capacity = static_cast<std::size_t>(smCount) *
+                                 static_cast<std::size_t>(blocksPerSm);
+    const std::size_t blocks = needed == 0 ? 1 : needed;
+    const std::size_t capped = blocks < capacity ? blocks : capacity;
+    return static_cast<unsigned>(
+        capped < kMaxGridBlocks ? capped : kMaxGridBlocks);
+  }
+  return gridFor(n, threads);
+}
+
 /// RAII owner for one managed workspace allocation.
 struct ManagedWorkspace {
   void *raw = nullptr;
@@ -486,18 +535,20 @@ struct ManagedWorkspace {
 constexpr unsigned kRounds = 5;
 
 /// Damped simultaneous ("Jacobi") fit-to-max.  See the file header.
-void launchJacobi(double *re, double *im, const int *ant1, const int *ant2,
-                  std::size_t nRows, std::size_t nChannels, std::size_t nPol,
-                  std::size_t nAnt, float *meta, double maxLevel,
+void launchJacobi(MdSpan2D<double> re, MdSpan2D<double> im,
+                  cuda::std::span<const int> ant1,
+                  cuda::std::span<const int> ant2, std::size_t nChannels,
+                  std::size_t nPol, std::size_t nAnt,
+                  cuda::std::span<float> meta, double maxLevel,
                   dysco_stream_t stream) {
-  const std::size_t visPerRow = nChannels * nPol;
-  const std::size_t n = nRows * visPerRow;
+  const std::size_t visPerRow = re.extent(1);
+  const std::size_t n = re.extent(0) * visPerRow;
   const std::size_t lCount = visPerRow;
   const std::size_t mCount = nPol * nAnt;
 
   ManagedWorkspace ws;
-  const std::size_t bytes = (lCount + mCount) * sizeof(double) +
-                            2 * sizeof(int);
+  const std::size_t bytes =
+      (lCount + mCount) * sizeof(double) + 2 * sizeof(int);
   DYSCO_MANAGED_ALLOC(&ws.raw, bytes);
   unsigned char *cursor = static_cast<unsigned char *>(ws.raw);
   double *L = reinterpret_cast<double *>(cursor);
@@ -508,17 +559,24 @@ void launchJacobi(double *re, double *im, const int *ant1, const int *ant2,
   cursor += sizeof(int);
   int *doneFlag = reinterpret_cast<int *>(cursor);
 
-  constexpr unsigned kBlock = 256;
-  const unsigned grid = gridFor(n, kBlock);
-  const unsigned factorsGrid = gridFor(lCount + mCount, kBlock);
+  cuda::std::span<double> lView(L, lCount);
+  cuda::std::span<double> mView(M, mCount);
+  cuda::std::span<int, 1> progressView(progressFlag, 1);
+  cuda::std::span<int, 1> doneView(doneFlag, 1);
+
+  const std::size_t reduceSmem =
+      (lCount + mCount) * sizeof(cuda::std::uint64_t);
+  const std::size_t phaseASmem = lCount * sizeof(cuda::std::uint64_t);
+  const unsigned applyGrid = gridFor(n, kK6Block);
+  const unsigned reduceGrid =
+      residentGrid(k6b_reduce, n, kK6Block, reduceSmem);
 
   // ---- Phase A: exact per-channel normalization ----
-  DYSCO_GPU_CHECK(
-      cudaMemsetAsync(L, 0, lCount * sizeof(double), stream));
-  k6a_reduce_channel_max<<<grid, kBlock, 0, stream>>>(
-      re, im, ant1, ant2, nRows, visPerRow, L);
-  k6a_apply_channel_fit<<<grid, kBlock, 0, stream>>>(re, im, n, visPerRow, L,
-                                                     meta, maxLevel);
+  DYSCO_GPU_CHECK(cudaMemsetAsync(L, 0, lCount * sizeof(double), stream));
+  k6a_reduce_channel_max<<<reduceGrid, kK6Block, phaseASmem, stream>>>(
+      re, im, ant1, ant2, lView);
+  k6a_apply_channel_fit<<<applyGrid, kK6Block, 0, stream>>>(re, im, lView,
+                                                            meta, maxLevel);
 
   // ---- Phase B: damped simultaneous rounds ----
   DYSCO_GPU_CHECK(cudaMemsetAsync(doneFlag, 0, sizeof(int), stream));
@@ -527,25 +585,27 @@ void launchJacobi(double *re, double *im, const int *ant1, const int *ant2,
     DYSCO_GPU_CHECK(cudaMemsetAsync(M, 0, mCount * sizeof(double), stream));
     DYSCO_GPU_CHECK(cudaMemsetAsync(progressFlag, 0, sizeof(int), stream));
 
-    k6b_reduce<<<grid, kBlock, 0, stream>>>(
-        re, im, ant1, ant2, nRows, nChannels, nPol, nAnt, L, M, doneFlag);
-    k6b_factors<<<factorsGrid, kBlock, 0, stream>>>(
-        L, M, lCount, mCount, meta, visPerRow, maxLevel,
-        /*epsChannel=*/1e-3, /*epsAntenna=*/1e-2, progressFlag, doneFlag);
-    k6b_apply<<<grid, kBlock, 0, stream>>>(re, im, ant1, ant2, nRows,
-                                           nChannels, nPol, nAnt, L, M,
-                                           doneFlag);
-    k6b_mark_done<<<1, 1, 0, stream>>>(doneFlag, progressFlag);
+    k6b_reduce<<<reduceGrid, kK6Block, reduceSmem, stream>>>(
+        re, im, ant1, ant2, nPol, nAnt, lView, mView, doneView);
+    k6b_factors<<<gridFor(lCount + mCount, kK6Block), kK6Block, 0, stream>>>(
+        lView, mView, lCount, mCount, meta, visPerRow, maxLevel,
+        /*epsChannel=*/1e-3, /*epsAntenna=*/1e-2, progressView, doneView);
+    k6b_apply<<<applyGrid, kK6Block, 0, stream>>>(re, im, ant1, ant2, nPol,
+                                                  nAnt, lView, mView, doneView);
+    k6b_mark_done<<<1, 1, 0, stream>>>(doneView, progressView);
   }
   DYSCO_GPU_CHECK(cudaGetLastError());
 }
 
 /// Legacy greedy fit-to-max (bit-identical to the CPU encoder).
-void launchGreedy(double *re, double *im, const int *ant1, const int *ant2,
-                  std::size_t nRows, std::size_t nChannels, std::size_t nPol,
-                  std::size_t nAnt, float *meta, double maxLevel,
+void launchGreedy(MdSpan2D<double> re, MdSpan2D<double> im,
+                  cuda::std::span<const int> ant1,
+                  cuda::std::span<const int> ant2, std::size_t nChannels,
+                  std::size_t nPol, std::size_t nAnt,
+                  cuda::std::span<float> meta, double maxLevel,
                   dysco_stream_t stream) {
-  const std::size_t visPerRow = nChannels * nPol;
+  const std::size_t visPerRow = re.extent(1);
+  const std::size_t nRows = re.extent(0);
 
   // CSR: rows each antenna participates in (each non-autocorr row -> 2).
   std::vector<std::size_t> offset(nAnt + 1, 0);
@@ -583,8 +643,9 @@ void launchGreedy(double *re, double *im, const int *ant1, const int *ant2,
                        cudaFuncAttributeMaxDynamicSharedMemorySize,
                        static_cast<int>(smemBytes));
   fitToMaxKernelGreedy<<<1, kThreads, smemBytes, stream>>>(
-      re, im, ant1, ant2, nRows, nChannels, nPol, nAnt, meta, maxLevel,
-      dCsrRow, dCsrOffset);
+      re, im, ant1, ant2, nChannels, nPol, nAnt, meta, maxLevel,
+      cuda::std::span<const int>(dCsrRow, total != 0 ? total : 1),
+      cuda::std::span<const std::size_t>(dCsrOffset, nAnt + 1));
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   DYSCO_FREE(dCsrRow);
   DYSCO_FREE(dCsrOffset);
@@ -593,26 +654,27 @@ void launchGreedy(double *re, double *im, const int *ant1, const int *ant2,
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Public entry point (signature unchanged)
+// Public entry point
 // ---------------------------------------------------------------------------
 
-void k6_fit_to_max(dysco::span<double> re, dysco::span<double> im,
-                   dysco::span<const int> ant1, dysco::span<const int> ant2,
-                   std::size_t nRows, std::size_t nChannels, std::size_t nPol,
-                   std::size_t nAnt, dysco::span<float> meta, double maxLevel,
+void k6_fit_to_max(MdSpan2D<double> re, MdSpan2D<double> im,
+                   cuda::std::span<const int> ant1,
+                   cuda::std::span<const int> ant2, std::size_t nChannels,
+                   std::size_t nPol, std::size_t nAnt,
+                   cuda::std::span<float> meta, double maxLevel,
                    dysco_stream_t stream) {
-  if (nRows == 0 || nChannels == 0 || nPol == 0 || nAnt == 0 ||
+  if (re.extent(0) == 0 || nChannels == 0 || nPol == 0 || nAnt == 0 ||
       maxLevel == 0.0)
     return;
 
   const char *greedy = std::getenv("DYSCO_K6_GREEDY");
   if (greedy != nullptr && greedy[0] != '\0' && greedy[0] != '0') {
-    launchGreedy(re.data(), im.data(), ant1.data(), ant2.data(), nRows,
-                 nChannels, nPol, nAnt, meta.data(), maxLevel, stream);
+    launchGreedy(re, im, ant1, ant2, nChannels, nPol, nAnt, meta, maxLevel,
+                 stream);
     return;
   }
-  launchJacobi(re.data(), im.data(), ant1.data(), ant2.data(), nRows,
-               nChannels, nPol, nAnt, meta.data(), maxLevel, stream);
+  launchJacobi(re, im, ant1, ant2, nChannels, nPol, nAnt, meta, maxLevel,
+               stream);
 }
 
 }  // namespace gpu

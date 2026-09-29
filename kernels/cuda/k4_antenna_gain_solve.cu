@@ -4,42 +4,60 @@
 // `AFTimeBlockEncoder::calculateAntennaeRMS`.  The whole solve runs in a
 // single thread block with one thread per antenna; each thread reproduces the
 // *sequential* inner loop over j so the double-precision accumulation order is
-// identical to the CPU version.  The damping/zeroing/precision step is
-// performed by thread 0, again in the same order as the CPU code.
+// identical to the CPU version.
+//
+// Modernization: the two block-wide reductions of the original (the damped
+// maximum and the convergence measure) are now done with `cub::BlockReduce`
+// instead of having thread 0 walk the arrays serially.  A maximum is
+// order-independent, so the result is bit-for-bit the same as the sequential
+// CPU version.  The working arrays live in shared memory, and the block size
+// is fixed so it matches the compile-time `cub::BlockReduce` block size; idle
+// threads contribute the neutral element to the reductions.
 
 #include "cuda_kernels.h"
 
-#include <cmath>
+#include <cub/cub.cuh>
 
 namespace dyscostman {
 namespace gpu {
 
 namespace {
 
-__global__ void antennaGainSolveKernel(const double *matrix, size_t nAnt,
-                                       double *rms) {
-  const size_t i = threadIdx.x;
-  extern __shared__ double smem[];
-  double *next = smem;       // nAnt
-  double *sharedPrec = smem + nAnt;  // 1
+constexpr unsigned kAntennaSolveThreads = 1024;
+using BlockReduceDouble = cub::BlockReduce<double, kAntennaSolveThreads>;
 
-  if (i < nAnt) rms[i] = 1.0;
+struct GainSolveShared {
+  double rms[kAntennaSolveThreads];
+  double next[kAntennaSolveThreads];
+  typename BlockReduceDouble::TempStorage reduceMax;
+  typename BlockReduceDouble::TempStorage reducePrecision;
+};
+
+__global__ void antennaGainSolveKernel(MdSpan2D<const double> matrix,
+                                       cuda::std::span<double> rmsOut) {
+  __shared__ GainSolveShared shared;
+  double *rms = shared.rms;
+  double *next = shared.next;
+  const std::size_t nAnt = matrix.extent(0);
+  const std::size_t i = threadIdx.x;
+  const bool active = i < nAnt;
+
+  if (active) rms[i] = 1.0;
   __syncthreads();
 
   double precision = 1.0;
-  int iteration = 0;
+  unsigned iteration = 0;
   while (iteration < 100 && precision > 1e-6) {
     ++iteration;
-    if (i < nAnt) {
+    if (active) {
       double weightSum = 0.0;
       double acc = 0.0;
-      for (size_t j = 0; j != nAnt; ++j) {
+      for (std::size_t j = 0; j != nAnt; ++j) {
         if (i != j && rms[j] != 0.0) {
-          const double w = rms[j];
-          const double m = matrix[i * nAnt + j];
-          if (isfinite(m)) {
+          const double m = matrix(i, j);
+          if (cuda::std::isfinite(m)) {
             acc += m;
-            weightSum += w;
+            weightSum += rms[j];
           }
         }
       }
@@ -47,50 +65,53 @@ __global__ void antennaGainSolveKernel(const double *matrix, size_t nAnt,
     }
     __syncthreads();
 
-    if (i == 0) {
-      double maxVal = 0.0;
-      for (size_t k = 0; k != nAnt; ++k) {
-        rms[k] = next[k] * 0.8 + rms[k] * 0.2;
-        maxVal = fmax(maxVal, rms[k]);
-      }
-      double prec = 0.0;
-      for (size_t k = 0; k != nAnt; ++k) {
-        if (rms[k] < maxVal * 1e-5) rms[k] = 0.0;
-        prec = fmax(prec, fabs(rms[k] - next[k]) / maxVal);
-      }
-      sharedPrec[0] = prec;
-    }
+    // Damped update (element-wise, so exactly reproducible) followed by the
+    // order-independent maximum over all antennas.
+    if (active) rms[i] = next[i] * 0.8 + rms[i] * 0.2;
+    const double maxVal =
+        BlockReduceDouble(shared.reduceMax)
+            .Reduce(active ? rms[i] : 0.0, cuda::maximum<>{});
     __syncthreads();
-    precision = sharedPrec[0];
+
+    if (active && rms[i] < maxVal * 1e-5) rms[i] = 0.0;
+    const double local =
+        active ? cuda::std::fabs(rms[i] - next[i]) / maxVal : 0.0;
+    precision = BlockReduceDouble(shared.reducePrecision)
+                    .Reduce(local, cuda::maximum<>{});
+    __syncthreads();
   }
+
+  if (active) rmsOut[i] = rms[i];
 }
 
-__global__ void storeGainsKernel(const double *rms, size_t nAnt, float *dest) {
-  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= nAnt) return;
-  dest[i] = static_cast<float>(rms[i]);
+__global__ void storeGainsKernel(cuda::std::span<const double> rms,
+                                 cuda::std::span<float> destination) {
+  const std::size_t i =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= rms.size()) return;
+  destination[i] = static_cast<float>(rms[i]);
 }
 
 }  // namespace
 
-void k4_antenna_gain_solve(dysco::span<const double> matrix, std::size_t nAnt,
-                           dysco::span<double> rmsPerAntenna,
+void k4_antenna_gain_solve(MdSpan2D<const double> matrix,
+                           cuda::std::span<double> rmsPerAntenna,
                            dysco_stream_t stream) {
-  const auto threads = static_cast<unsigned>(nAnt < 1024 ? nAnt : 1024);
-  const std::size_t smemBytes = (nAnt + 1) * sizeof(double);
-  antennaGainSolveKernel<<<1, threads, smemBytes, stream>>>(
-      matrix.data(), nAnt, rmsPerAntenna.data());
+  // The block size is fixed (CUB's BlockReduce block size is a compile-time
+  // constant); threads without an antenna only contribute to the reductions.
+  antennaGainSolveKernel<<<1, kAntennaSolveThreads, 0, stream>>>(
+      matrix, rmsPerAntenna);
 }
 
-void k4_store_antenna_gains(dysco::span<const double> rmsPerAntenna,
-                            dysco::span<float> destination,
+void k4_store_antenna_gains(cuda::std::span<const double> rmsPerAntenna,
+                            cuda::std::span<float> destination,
                             dysco_stream_t stream) {
   constexpr unsigned kThreads = 256;
   const std::size_t nAnt = rmsPerAntenna.size();
   const auto blocks =
       static_cast<unsigned>((nAnt + kThreads - 1) / kThreads);
-  DYSCO_LAUNCH_1D(storeGainsKernel, blocks, kThreads, stream,
-                  rmsPerAntenna.data(), nAnt, destination.data());
+  DYSCO_LAUNCH_1D(storeGainsKernel, blocks, kThreads, stream, rmsPerAntenna,
+                  destination);
 }
 
 }  // namespace gpu

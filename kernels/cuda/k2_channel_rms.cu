@@ -18,35 +18,37 @@ namespace gpu {
 
 namespace {
 
-__global__ void channelRmsKernel(const double *re, const double *im,
-                                 size_t nRows, size_t visPerRow,
-                                 float *channelRms) {
-  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+__global__ void channelRmsKernel(MdSpan2D<const double> re,
+                                 MdSpan2D<const double> im,
+                                 cuda::std::span<float> channelRms) {
+  const std::size_t visPerRow = re.extent(1);
+  const std::size_t nRows = re.extent(0);
+  const std::size_t i =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= visPerRow) return;
   double value = 0.0;
-  size_t count = 0;
-  for (size_t row = 0; row != nRows; ++row) {
-    const size_t idx = row * visPerRow + i;
-    const double r = re[idx];
-    const double v = im[idx];
-    if (isfinite(r) && isfinite(v)) {
+  std::size_t count = 0;
+  for (std::size_t row = 0; row != nRows; ++row) {
+    const double r = re(row, i);
+    const double v = im(row, i);
+    if (cuda::std::isfinite(r) && cuda::std::isfinite(v)) {
       ++count;
       value += r * r + v * v;
     }
   }
-  channelRms[i] = static_cast<float>(sqrt(value / (count * 2.0)));
+  channelRms[i] = static_cast<float>(cuda::std::sqrt(value / (count * 2.0)));
 }
 
 }  // namespace
 
-void k2_channel_rms(dysco::span<const double> re, dysco::span<const double> im,
-                    std::size_t nRows, std::size_t visPerRow,
-                    dysco::span<float> channelRms, dysco_stream_t stream) {
+void k2_channel_rms(MdSpan2D<const double> re, MdSpan2D<const double> im,
+                    cuda::std::span<float> channelRms, dysco_stream_t stream) {
   constexpr unsigned kThreads = 256;
+  const std::size_t visPerRow = re.extent(1);
   const auto blocks =
       static_cast<unsigned>((visPerRow + kThreads - 1) / kThreads);
-  DYSCO_LAUNCH_1D(channelRmsKernel, blocks, kThreads, stream, re.data(),
-                  im.data(), nRows, visPerRow, channelRms.data());
+  DYSCO_LAUNCH_1D(channelRmsKernel, blocks, kThreads, stream, re, im,
+                  channelRms);
 }
 
 }  // namespace gpu

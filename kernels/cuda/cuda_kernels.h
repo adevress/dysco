@@ -7,110 +7,119 @@
  * own `.cu` file; this header is the single place where the orchestration
  * (`gpu_af_codec.cu`) sees them.
  *
- * The host API is expressed in terms of `dysco::span` views (which are
- * `std::span` under C++20) instead of raw pointer/size pairs.  The device
- * kernels themselves still take plain pointers, since spans are not
- * device-annotated; the launchers forward `data()` and `size()`.
+ * The host API (and the device kernels behind it) is expressed in terms of
+ * libcu++ views — `cuda::std::span` for one-dimensional buffers and
+ * `cuda::std::mdspan` (via `MdSpan2D`) for row-major two-dimensional arrays —
+ * instead of raw pointer/size pairs.  The views are `__host__ __device__`
+ * types and are passed to the kernels by value.
  *
  * Data layout used by all kernels (SoA form of one AF time block):
  *
  *   visible count            nVis = nRows * visPerRow,  visPerRow = nChannels*nPol
- *   re/im                    double[nVis], index = row*visPerRow + ch*nPol + pol
- *   ant1/ant2                int[nRows]
- *   channelRms               float[visPerRow]
- *   antennaRms               float[nPol*nAnt]  (meta order: [pol*nAnt + ant])
- *   symbols                  uint32_t[2*nVis]  (re at 2i, imag at 2i+1)
- *   packed                   uint8_t[ceil(2*nVis*bits/8)]
+ *   interleaved              MdSpan2D<const float>[nVis, 2]
+ *   re/im                    MdSpan2D<double>[nRows, visPerRow]
+ *                            index = (row, ch*nPol + pol)
+ *   ant1/ant2                span<int>[nRows]
+ *   channelRms               span<float>[visPerRow]
+ *   matrix                   MdSpan2D<double>[nAnt, nAnt]
+ *   antennaRms               span<float>[nPol*nAnt]  (meta order: [pol*nAnt + ant])
+ *   symbols                  MdSpan2D<unsigned int>[nVis, 2]  (re, imag)
+ *   packed                   span<unsigned char>[ceil(2*nVis*bits/8)]
  */
 
 #include "../gpu_portability.h"
-#include "../span.h"
+#include "cuda_cccl.cuh"
 
 #include <cstddef>
 #include <cstdint>
 
-namespace dyscostman::gpu {
+namespace dyscostman {
+namespace gpu {
 
 // ---------------------------------------------------------------- k1_gather_convert
-void k1_gather_convert(dysco::span<const float> interleaved, std::size_t nRows,
-                       std::size_t visPerRow, dysco::span<double> re,
-                       dysco::span<double> im, dysco_stream_t stream);
+void k1_gather_convert(MdSpan2D<const float> interleaved,
+                       cuda::std::span<double> re, cuda::std::span<double> im,
+                       dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k2_channel_rms
-void k2_channel_rms(dysco::span<const double> re, dysco::span<const double> im,
-                    std::size_t nRows, std::size_t visPerRow,
-                    dysco::span<float> channelRms, dysco_stream_t stream);
+void k2_channel_rms(MdSpan2D<const double> re, MdSpan2D<const double> im,
+                    cuda::std::span<float> channelRms, dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k3_antenna_rms_matrix
-void k3_antenna_rms_matrix(dysco::span<const double> re,
-                           dysco::span<const double> im,
-                           dysco::span<const int> ant1,
-                           dysco::span<const int> ant2, std::size_t nRows,
+void k3_antenna_rms_matrix(MdSpan2D<const double> re,
+                           MdSpan2D<const double> im,
+                           cuda::std::span<const int> ant1,
+                           cuda::std::span<const int> ant2,
                            std::size_t nChannels, std::size_t nPol,
-                           std::size_t nAnt, std::size_t pol,
-                           dysco::span<double> matrix, dysco_stream_t stream);
+                           std::size_t pol, MdSpan2D<double> matrix,
+                           dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k4_antenna_gain_solve
-void k4_antenna_gain_solve(dysco::span<const double> matrix, std::size_t nAnt,
-                           dysco::span<double> rmsPerAntenna,
+void k4_antenna_gain_solve(MdSpan2D<const double> matrix,
+                           cuda::std::span<double> rmsPerAntenna,
                            dysco_stream_t stream);
 /// Convert the double-precision gains into the float metadata region.
-void k4_store_antenna_gains(dysco::span<const double> rmsPerAntenna,
-                            dysco::span<float> destination,
+void k4_store_antenna_gains(cuda::std::span<const double> rmsPerAntenna,
+                            cuda::std::span<float> destination,
                             dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k5_apply_norm
-void k5a_apply_channel_norm(dysco::span<double> re, dysco::span<double> im,
-                            std::size_t visPerRow,
-                            dysco::span<const float> channelRms,
+void k5a_apply_channel_norm(cuda::std::span<double> re,
+                            cuda::std::span<double> im, std::size_t visPerRow,
+                            cuda::std::span<const float> channelRms,
                             dysco_stream_t stream);
-void k5b_apply_antenna_norm(dysco::span<double> re, dysco::span<double> im,
-                            dysco::span<const int> ant1,
-                            dysco::span<const int> ant2, std::size_t nRows,
+void k5b_apply_antenna_norm(MdSpan2D<double> re, MdSpan2D<double> im,
+                            cuda::std::span<const int> ant1,
+                            cuda::std::span<const int> ant2,
                             std::size_t nChannels, std::size_t nPol,
                             std::size_t pol,
-                            dysco::span<const double> rmsPerAntenna,
+                            cuda::std::span<const double> rmsPerAntenna,
                             dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k6_fit_to_max
 /// Runs the complete greedy fit-to-maximum optimization for all
 /// polarizations.  `maxLevel` is the largest decodable value.
-void k6_fit_to_max(dysco::span<double> re, dysco::span<double> im,
-                   dysco::span<const int> ant1, dysco::span<const int> ant2,
-                   std::size_t nRows, std::size_t nChannels, std::size_t nPol,
-                   std::size_t nAnt, dysco::span<float> meta, double maxLevel,
+void k6_fit_to_max(MdSpan2D<double> re, MdSpan2D<double> im,
+                   cuda::std::span<const int> ant1,
+                   cuda::std::span<const int> ant2, std::size_t nChannels,
+                   std::size_t nPol, std::size_t nAnt,
+                   cuda::std::span<float> meta, double maxLevel,
                    dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k7_quantize_dither
 /// Flat quantization used by the unit tests (one symbol per value).
-void k7_quantize_flat(dysco::span<const float> values,
-                      dysco::span<const float> decValues, std::uint32_t seedLo,
-                      std::uint32_t seedHi, std::uint64_t blockIndex,
-                      dysco::span<unsigned int> symbols,
+void k7_quantize_flat(cuda::std::span<const float> values,
+                      cuda::std::span<const float> decValues,
+                      std::uint32_t seedLo, std::uint32_t seedHi,
+                      std::uint64_t blockIndex,
+                      cuda::std::span<unsigned int> symbols,
                       dysco_stream_t stream);
-void k7_quantize_dither(dysco::span<const double> re,
-                        dysco::span<const double> im,
-                        dysco::span<const float> decValues, std::uint32_t seedLo,
-                        std::uint32_t seedHi, std::uint64_t blockIndex,
-                        dysco::span<unsigned int> symbols,
+void k7_quantize_dither(MdSpan2D<const double> re, MdSpan2D<const double> im,
+                        cuda::std::span<const float> decValues,
+                        std::uint32_t seedLo, std::uint32_t seedHi,
+                        std::uint64_t blockIndex,
+                        cuda::std::span<unsigned int> symbols,
                         dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k8_bit_pack
-void k8_bit_pack(dysco::span<const unsigned int> symbols, unsigned bits,
-                 dysco::span<unsigned char> packed, dysco_stream_t stream);
+void k8_bit_pack(cuda::std::span<const unsigned int> symbols, unsigned bits,
+                 cuda::std::span<unsigned char> packed, dysco_stream_t stream);
 
 // ---------------------------------------------------------------- d1_bit_unpack
-void d1_bit_unpack(dysco::span<const unsigned char> packed, unsigned bits,
-                   dysco::span<unsigned int> symbols, dysco_stream_t stream);
+void d1_bit_unpack(cuda::std::span<const unsigned char> packed, unsigned bits,
+                   cuda::std::span<unsigned int> symbols,
+                   dysco_stream_t stream);
 
 // ---------------------------------------------------------------- d2_dequantize
-void d2_dequantize(dysco::span<const unsigned int> symbols, std::size_t nRows,
+void d2_dequantize(MdSpan2D<const unsigned int> symbols,
+                   cuda::std::span<const float> meta,
+                   cuda::std::span<const int> ant1,
+                   cuda::std::span<const int> ant2, std::size_t nRows,
                    std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
-                   dysco::span<const float> meta, dysco::span<const int> ant1,
-                   dysco::span<const int> ant2,
-                   dysco::span<const float> decValues,
-                   dysco::span<float> interleaved, dysco_stream_t stream);
+                   cuda::std::span<const float> decValues,
+                   MdSpan2D<float> interleaved, dysco_stream_t stream);
 
-}  // namespace dyscostman::gpu
+}  // namespace gpu
+}  // namespace dyscostman
 
 #endif  // DYSCO_CUDA_KERNELS_H
