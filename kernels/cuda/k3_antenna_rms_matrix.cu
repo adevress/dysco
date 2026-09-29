@@ -10,20 +10,15 @@
 
 #include "cuda_kernels.h"
 
-#include <cmath>
-
 namespace dyscostman {
 namespace gpu {
 
 namespace {
 
 __global__ void initNaNKernel(cuda::std::span<double> matrix) {
-  const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * blockDim.x;
-  for (std::size_t i =
-           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       i < matrix.size(); i += stride) {
-    matrix[i] = nan("");
+  const std::size_t stride = gridStrideSize();
+  for (std::size_t i = threadFlattenedId(); i < matrix.size(); i += stride) {
+    matrix[i] = maxKeyToDouble(kQuietNaNBits);
   }
 }
 
@@ -34,8 +29,7 @@ __global__ void antennaRmsMatrixKernel(MdSpan2D<const double> re,
                                        std::size_t nChannels, std::size_t nPol,
                                        std::size_t pol,
                                        MdSpan2D<double> matrix) {
-  const std::size_t row =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t row = threadFlattenedId();
   if (row >= re.extent(0)) return;
   const std::size_t nAnt = matrix.extent(0);
   std::size_t a1 = static_cast<std::size_t>(ant1[row]);
@@ -71,14 +65,12 @@ void k3_antenna_rms_matrix(MdSpan2D<const double> re,
                            std::size_t nChannels, std::size_t nPol,
                            std::size_t pol, MdSpan2D<double> matrix,
                            dysco_stream_t stream) {
-  constexpr unsigned kThreads = 256;
+  constexpr unsigned kThreads = kThreadBlockSize;
   const std::size_t matrixCount = matrix.extent(0) * matrix.extent(1);
-  const auto initBlocks =
-      static_cast<unsigned>((matrixCount + kThreads - 1) / kThreads);
+  const auto initBlocks = gridFor(matrixCount, kThreads);
   DYSCO_LAUNCH_1D(initNaNKernel, initBlocks, kThreads, stream,
                   cuda::std::span<double>(matrix.data_handle(), matrixCount));
-  const auto blocks = static_cast<unsigned>(
-      (re.extent(0) + kThreads - 1) / kThreads);
+  const auto blocks = gridFor(re.extent(0), kThreads);
   DYSCO_LAUNCH_1D(antennaRmsMatrixKernel, blocks, kThreads, stream, re, im,
                   ant1, ant2, nChannels, nPol, pol, matrix);
 }

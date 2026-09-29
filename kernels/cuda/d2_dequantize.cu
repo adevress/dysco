@@ -5,14 +5,11 @@
 // like the CPU `AFTimeBlockEncoder::Decode`.
 //
 // The kernel is launched with a 2D grid: `blockIdx.x` selects the row and
-// `blockIdx.y` the (channel,pol) within the row.  This removes the per-element
-// `i / visPerRow` 64-bit division of the original flat formulation; the
-// remaining index arithmetic is done in 32 bits.  The arithmetic itself (and
-// therefore the decoded values) is unchanged.
+// `blockIdx.y` the (channel,pol) within the row, which avoids a per-element
+// 64-bit `i / visPerRow` division; the remaining index arithmetic is done in
+// 32 bits.
 
 #include "cuda_kernels.h"
-
-#include <cmath>
 
 namespace dyscostman {
 namespace gpu {
@@ -28,6 +25,7 @@ __global__ void dequantizeKernel(MdSpan2D<const unsigned int> symbols,
                                  cuda::std::span<const float> decValues,
                                  MdSpan2D<float> interleaved) {
   const unsigned decCount = static_cast<unsigned>(decValues.size());
+  const double nanValue = maxKeyToDouble(kQuietNaNBits);
   const std::size_t row = blockIdx.x;
   const unsigned rem =
       static_cast<unsigned>(blockIdx.y) * blockDim.x + threadIdx.x;
@@ -43,9 +41,9 @@ __global__ void dequantizeKernel(MdSpan2D<const unsigned int> symbols,
   const unsigned int sRe = symbols(i, 0);
   const unsigned int sIm = symbols(i, 1);
   const double vRe =
-      (sRe < decCount) ? static_cast<double>(decValues[sRe]) : nan("");
+      (sRe < decCount) ? static_cast<double>(decValues[sRe]) : nanValue;
   const double vIm =
-      (sIm < decCount) ? static_cast<double>(decValues[sIm]) : nan("");
+      (sIm < decCount) ? static_cast<double>(decValues[sIm]) : nanValue;
   interleaved(i, 0) = static_cast<float>(vRe * factor);
   interleaved(i, 1) = static_cast<float>(vIm * factor);
 }
@@ -60,9 +58,9 @@ void d2_dequantize(MdSpan2D<const unsigned int> symbols,
                    cuda::std::span<const float> decValues,
                    MdSpan2D<float> interleaved, dysco_stream_t stream) {
   const std::size_t visPerRow = nChannels * nPol;
-  constexpr unsigned kThreads = 256;
+  constexpr unsigned kThreads = kThreadBlockSize;
   const dim3 grid(static_cast<unsigned>(nRows),
-                  static_cast<unsigned>((visPerRow + kThreads - 1) / kThreads));
+                  gridFor(visPerRow, kThreads));
   DYSCO_LAUNCH_1D(dequantizeKernel, grid, kThreads, stream, symbols, meta, ant1,
                   ant2, visPerRow, static_cast<unsigned>(nPol), nAnt,
                   decValues, interleaved);

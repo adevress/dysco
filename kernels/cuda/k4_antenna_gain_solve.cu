@@ -6,13 +6,13 @@
 // *sequential* inner loop over j so the double-precision accumulation order is
 // identical to the CPU version.
 //
-// Modernization: the two block-wide reductions of the original (the damped
-// maximum and the convergence measure) are now done with `cub::BlockReduce`
-// instead of having thread 0 walk the arrays serially.  A maximum is
-// order-independent, so the result is bit-for-bit the same as the sequential
-// CPU version.  The working arrays live in shared memory, and the block size
-// is fixed so it matches the compile-time `cub::BlockReduce` block size; idle
-// threads contribute the neutral element to the reductions.
+// The two block-wide reductions (the damped maximum and the convergence
+// measure) are done with `cub::BlockReduce` instead of having thread 0 walk
+// the arrays serially.  A maximum is order-independent, so the result is
+// bit-for-bit the same as the sequential CPU version.  The working arrays live
+// in shared memory, and the block size is fixed so it matches the
+// compile-time `cub::BlockReduce` block size; idle threads contribute the
+// neutral element to the reductions.
 
 #include "cuda_kernels.h"
 
@@ -24,6 +24,12 @@ namespace gpu {
 namespace {
 
 constexpr unsigned kAntennaSolveThreads = 1024;
+// Solver parameters, mirroring `AFTimeBlockEncoder::calculateAntennaeRMS`.
+constexpr unsigned kMaxIterations = 100;
+constexpr double kPrecisionTarget = 1e-6;
+constexpr double kDampingNew = 0.8;      ///< weight of the new estimate
+constexpr double kDampingOld = 1.0 - kDampingNew;
+constexpr double kZeroThreshold = 1e-5;  ///< damped max below which a gain is zeroed
 using BlockReduceDouble = cub::BlockReduce<double, kAntennaSolveThreads>;
 
 struct GainSolveShared {
@@ -47,7 +53,7 @@ __global__ void antennaGainSolveKernel(MdSpan2D<const double> matrix,
 
   double precision = 1.0;
   unsigned iteration = 0;
-  while (iteration < 100 && precision > 1e-6) {
+  while (iteration < kMaxIterations && precision > kPrecisionTarget) {
     ++iteration;
     if (active) {
       double weightSum = 0.0;
@@ -67,13 +73,13 @@ __global__ void antennaGainSolveKernel(MdSpan2D<const double> matrix,
 
     // Damped update (element-wise, so exactly reproducible) followed by the
     // order-independent maximum over all antennas.
-    if (active) rms[i] = next[i] * 0.8 + rms[i] * 0.2;
+    if (active) rms[i] = next[i] * kDampingNew + rms[i] * kDampingOld;
     const double maxVal =
         BlockReduceDouble(shared.reduceMax)
             .Reduce(active ? rms[i] : 0.0, cuda::maximum<>{});
     __syncthreads();
 
-    if (active && rms[i] < maxVal * 1e-5) rms[i] = 0.0;
+    if (active && rms[i] < maxVal * kZeroThreshold) rms[i] = 0.0;
     const double local =
         active ? cuda::std::fabs(rms[i] - next[i]) / maxVal : 0.0;
     precision = BlockReduceDouble(shared.reducePrecision)
@@ -86,8 +92,7 @@ __global__ void antennaGainSolveKernel(MdSpan2D<const double> matrix,
 
 __global__ void storeGainsKernel(cuda::std::span<const double> rms,
                                  cuda::std::span<float> destination) {
-  const std::size_t i =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t i = threadFlattenedId();
   if (i >= rms.size()) return;
   destination[i] = static_cast<float>(rms[i]);
 }
@@ -106,10 +111,9 @@ void k4_antenna_gain_solve(MdSpan2D<const double> matrix,
 void k4_store_antenna_gains(cuda::std::span<const double> rmsPerAntenna,
                             cuda::std::span<float> destination,
                             dysco_stream_t stream) {
-  constexpr unsigned kThreads = 256;
+  constexpr unsigned kThreads = kThreadBlockSize;
   const std::size_t nAnt = rmsPerAntenna.size();
-  const auto blocks =
-      static_cast<unsigned>((nAnt + kThreads - 1) / kThreads);
+  const auto blocks = gridFor(nAnt, kThreads);
   DYSCO_LAUNCH_1D(storeGainsKernel, blocks, kThreads, stream, rmsPerAntenna,
                   destination);
 }

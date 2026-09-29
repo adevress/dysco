@@ -48,7 +48,8 @@ class AfCodec {
    * @param ant1,ant2     host views, nRows ints.
    * @param seed          64-bit column seed for the Philox dither.
    * @param blockIndex    block index, part of the dither counter.
-   * @param fitToMaximum  run the K6 greedy optimization.
+   * @param fitToMaximum  run the K6 fit-to-max optimization (parallel
+   *                      damped-simultaneous "Jacobi" algorithm).
    * @param metaOut       host view, (nChannels*nPol + nPol*nAnt) floats.
    * @param packedOut     host view, ceil(2*nVis*bits/8) bytes.
    */

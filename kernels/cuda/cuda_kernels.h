@@ -36,6 +36,18 @@
 namespace dyscostman {
 namespace gpu {
 
+/// Default 1-D block size for the simple element-wise kernels.
+inline constexpr unsigned kThreadBlockSize = 256;
+
+/// Number of blocks needed to cover `n` elements with `threads` threads, at
+/// least one.  All kernels are grid-stride or bounds-checked, so an
+/// over-estimate is harmless.
+[[nodiscard]] inline unsigned gridFor(std::size_t n,
+                                      unsigned threads) noexcept {
+  const std::size_t blocks = (n + threads - 1) / threads;
+  return static_cast<unsigned>(blocks == 0 ? 1 : blocks);
+}
+
 // ---------------------------------------------------------------- k1_gather_convert
 void k1_gather_convert(MdSpan2D<const float> interleaved,
                        cuda::std::span<double> re, cuda::std::span<double> im,
@@ -77,8 +89,11 @@ void k5b_apply_antenna_norm(MdSpan2D<double> re, MdSpan2D<double> im,
                             dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k6_fit_to_max
-/// Runs the complete greedy fit-to-maximum optimization for all
-/// polarizations.  `maxLevel` is the largest decodable value.
+/// Runs the fit-to-maximum optimization for all polarizations.  `maxLevel` is
+/// the largest decodable value.  The default algorithm is the parallel
+/// damped-simultaneous ("Jacobi") variant; the legacy greedy variant
+/// (bit-identical to the CPU encoder) is selected with the `DYSCO_K6_GREEDY`
+/// environment variable.
 void k6_fit_to_max(MdSpan2D<double> re, MdSpan2D<double> im,
                    cuda::std::span<const int> ant1,
                    cuda::std::span<const int> ant2, std::size_t nChannels,

@@ -3,9 +3,9 @@
 // This file contains two implementations:
 //
 //   1. The default, fully grid-parallel *damped simultaneous* ("Jacobi")
-//      algorithm.  It replaces the old sequential greedy loop, which was the
-//      only sequential part of the encoder and ran as a single 256-thread
-//      block (≈0.5 % of the GPU, up to ~98 % of the total encode time).
+//      algorithm, which parallelizes the sequential greedy loop of
+//      `AFTimeBlockEncoder::fitToMaximum` (the only sequential part of the
+//      CPU encoder).
 //
 //   2. The legacy greedy kernel, kept for A/B benchmarking and selected with
 //      the environment variable `DYSCO_K6_GREEDY=1`.  It is bit-identical to
@@ -45,24 +45,16 @@
 // absolute values is monotonically non-decreasing.  The log-headroom shrinks
 // geometrically ((2/3)^R), so a handful of rounds is enough.  Every phase is a
 // grid-stride pass over the data and reductions use atomic maxima (order
-// independent, therefore deterministic run-to-run).
-//
-// ---------------------------------------------------------------------------
-// Modernization / optimization notes
-// ---------------------------------------------------------------------------
-// The per-round reductions used to issue three *global* `atomicMax` operations
-// per element, which made K6 the dominant GPU cost.  They now first aggregate
-// into a small block-local shared-memory histogram (`cuda::atomic_ref` with
-// `thread_scope_block`, libcu++) and flush that histogram to global memory once
-// per block.  The grid is sized through
-// `cudaOccupancyMaxActiveBlocksPerMultiprocessor` so it stays fully resident;
-// the number of global atomics drops by orders of magnitude while the result
-// is unchanged (a maximum is associative and commutative).
+// independent, therefore deterministic run-to-run).  The per-round reductions
+// aggregate into a block-local shared-memory histogram (`cuda::atomic_ref`
+// with `thread_scope_block`, libcu++) and flush it to global memory once per
+// block, and the reduction grid is sized through
+// `cudaOccupancyMaxActiveBlocksPerMultiprocessor` so it stays fully resident.
 
 #include "cuda_kernels.h"
 
-#include <cmath>
 #include <cstdlib>
+#include <memory>
 #include <vector>
 
 namespace dyscostman {
@@ -72,6 +64,12 @@ namespace {
 
 constexpr unsigned kK6Block = 256;
 constexpr unsigned kMaxGridBlocks = 4096;
+
+// Damping tolerances of the damped-simultaneous rounds: a channel factor is
+// considered settled below a relative headroom of 0.1%, an antenna factor
+// below 1% (mirrors the CPU greedy fit's stopping rules).
+constexpr double kEpsChannel = 1e-3;
+constexpr double kEpsAntenna = 1e-2;
 
 // ---------------------------------------------------------------------------
 // Phase A — exact per-channel normalization to maxLevel
@@ -92,11 +90,8 @@ __global__ void k6a_reduce_channel_max(MdSpan2D<const double> re,
   __syncthreads();
 
   const std::size_t n = re.extent(0) * visPerRow;
-  const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * kK6Block;
-  for (std::size_t idx =
-           static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
-       idx < n; idx += stride) {
+  const std::size_t stride = gridStrideSize();
+  for (std::size_t idx = threadFlattenedId(); idx < n; idx += stride) {
     const std::size_t row = idx / visPerRow;
     if (ant1[row] == ant2[row]) continue;  // skip autocorrelations
     const std::size_t vi = idx - row * visPerRow;
@@ -121,10 +116,8 @@ __global__ void k6a_apply_channel_fit(MdSpan2D<double> re,
                                       double maxLevel) {
   const std::size_t visPerRow = re.extent(1);
   const std::size_t n = re.extent(0) * visPerRow;
-  const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * kK6Block;
-  const std::size_t start =
-      static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
+  const std::size_t stride = gridStrideSize();
+  const std::size_t start = threadFlattenedId();
 
   // Metadata: only the first `visPerRow` global threads participate.
   for (std::size_t vi = start; vi < visPerRow; vi += stride) {
@@ -172,11 +165,8 @@ __global__ void k6b_reduce(MdSpan2D<const double> re,
   __syncthreads();
 
   const std::size_t n = re.extent(0) * visPerRow;
-  const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * kK6Block;
-  for (std::size_t idx =
-           static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
-       idx < n; idx += stride) {
+  const std::size_t stride = gridStrideSize();
+  for (std::size_t idx = threadFlattenedId(); idx < n; idx += stride) {
     const std::size_t row = idx / visPerRow;
     const int a1 = ant1[row];
     const int a2 = ant2[row];
@@ -207,21 +197,18 @@ __global__ void k6b_factors(cuda::std::span<double> L,
                             cuda::std::span<double> M, std::size_t nChPol,
                             std::size_t nPolAnt, cuda::std::span<float> meta,
                             std::size_t visPerRow, double maxLevel,
-                            double epsChannel, double epsAntenna,
                             cuda::std::span<int, 1> progressFlag,
                             cuda::std::span<const int, 1> doneFlag) {
   if (doneFlag[0]) return;
-  const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * kK6Block;
-  const std::size_t start =
-      static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
+  const std::size_t stride = gridStrideSize();
+  const std::size_t start = threadFlattenedId();
   int progress = 0;
 
   for (std::size_t vi = start; vi < nChPol; vi += stride) {
     const double l = L[vi];
     const double full =
         (maxLevel != 0.0 && l > 0.0) ? cuda::std::fmax(1.0, maxLevel / l) : 1.0;
-    if (full > 1.0 + epsChannel) progress = 1;
+    if (full > 1.0 + kEpsChannel) progress = 1;
     const double g = cuda::std::cbrt(full);
     L[vi] = g;  // now the factor, not the maximum
     meta[vi] = static_cast<float>(static_cast<double>(meta[vi]) / g);
@@ -230,7 +217,7 @@ __global__ void k6b_factors(cuda::std::span<double> L,
     const double m = M[ai];
     const double full =
         (maxLevel != 0.0 && m > 0.0) ? cuda::std::fmax(1.0, maxLevel / m) : 1.0;
-    if (full > 1.0 + epsAntenna) progress = 1;
+    if (full > 1.0 + kEpsAntenna) progress = 1;
     const double f = cuda::std::cbrt(full);
     M[ai] = f;
     meta[visPerRow + ai] =
@@ -250,11 +237,8 @@ __global__ void k6b_apply(MdSpan2D<double> re, MdSpan2D<double> im,
   if (doneFlag[0]) return;
   const std::size_t visPerRow = re.extent(1);
   const std::size_t n = re.extent(0) * visPerRow;
-  const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * kK6Block;
-  for (std::size_t idx =
-           static_cast<std::size_t>(blockIdx.x) * kK6Block + threadIdx.x;
-       idx < n; idx += stride) {
+  const std::size_t stride = gridStrideSize();
+  for (std::size_t idx = threadFlattenedId(); idx < n; idx += stride) {
     const std::size_t row = idx / visPerRow;
     const std::size_t vi = idx - row * visPerRow;
     const std::size_t pol = vi % nPol;
@@ -488,13 +472,6 @@ __global__ void fitToMaxKernelGreedy(
 // Host-side helpers
 // ---------------------------------------------------------------------------
 
-/// Number of blocks needed to cover `n` elements with `threads` threads, at
-/// least one.  The kernels are grid-stride, so an over-estimate is harmless.
-unsigned gridFor(std::size_t n, unsigned threads) {
-  const std::size_t blocks = (n + threads - 1) / threads;
-  return static_cast<unsigned>(blocks == 0 ? 1 : blocks);
-}
-
 /// Size a grid-stride launch to the number of blocks that actually fit on the
 /// device (occupancy API), capped by the amount of work.  This keeps the
 /// shared-memory reduction grid resident and avoids over-subscription.
@@ -522,14 +499,6 @@ unsigned residentGrid(Kernel kernel, std::size_t n, unsigned threads,
   return gridFor(n, threads);
 }
 
-/// RAII owner for one managed workspace allocation.
-struct ManagedWorkspace {
-  void *raw = nullptr;
-  ~ManagedWorkspace() {
-    if (raw != nullptr) (void)cudaFree(raw);
-  }
-};
-
 /// Number of damped simultaneous rounds.  The early-exit flag usually stops
 /// after 2–4; the remaining launches are no-ops.
 constexpr unsigned kRounds = 5;
@@ -546,11 +515,13 @@ void launchJacobi(MdSpan2D<double> re, MdSpan2D<double> im,
   const std::size_t lCount = visPerRow;
   const std::size_t mCount = nPol * nAnt;
 
-  ManagedWorkspace ws;
+  // Managed workspace: [L, M, progressFlag, doneFlag], owned as RAII.
   const std::size_t bytes =
       (lCount + mCount) * sizeof(double) + 2 * sizeof(int);
-  DYSCO_MANAGED_ALLOC(&ws.raw, bytes);
-  unsigned char *cursor = static_cast<unsigned char *>(ws.raw);
+  void *raw = nullptr;
+  DYSCO_MANAGED_ALLOC(&raw, bytes);
+  const std::unique_ptr<void, dysco_gpu::ManagedDeleter> workspace(raw);
+  unsigned char *cursor = static_cast<unsigned char *>(raw);
   double *L = reinterpret_cast<double *>(cursor);
   cursor += lCount * sizeof(double);
   double *M = reinterpret_cast<double *>(cursor);
@@ -588,8 +559,8 @@ void launchJacobi(MdSpan2D<double> re, MdSpan2D<double> im,
     k6b_reduce<<<reduceGrid, kK6Block, reduceSmem, stream>>>(
         re, im, ant1, ant2, nPol, nAnt, lView, mView, doneView);
     k6b_factors<<<gridFor(lCount + mCount, kK6Block), kK6Block, 0, stream>>>(
-        lView, mView, lCount, mCount, meta, visPerRow, maxLevel,
-        /*epsChannel=*/1e-3, /*epsAntenna=*/1e-2, progressView, doneView);
+        lView, mView, lCount, mCount, meta, visPerRow, maxLevel, progressView,
+        doneView);
     k6b_apply<<<applyGrid, kK6Block, 0, stream>>>(re, im, ant1, ant2, nPol,
                                                   nAnt, lView, mView, doneView);
     k6b_mark_done<<<1, 1, 0, stream>>>(doneView, progressView);
@@ -638,7 +609,7 @@ void launchGreedy(MdSpan2D<double> re, MdSpan2D<double> im,
   const std::size_t smemDoubles =
       visPerRow + 2 * nChannels + 2 * nAnt + 5;  // + sel[5]
   const std::size_t smemBytes = smemDoubles * sizeof(double);
-  constexpr unsigned kThreads = 256;
+  const unsigned kThreads = kK6Block;
   cudaFuncSetAttribute(fitToMaxKernelGreedy,
                        cudaFuncAttributeMaxDynamicSharedMemorySize,
                        static_cast<int>(smemBytes));

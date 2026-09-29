@@ -11,8 +11,6 @@
 
 #include "cuda_kernels.h"
 
-#include <cmath>
-
 namespace dyscostman {
 namespace gpu {
 
@@ -23,8 +21,7 @@ __global__ void channelRmsKernel(MdSpan2D<const double> re,
                                  cuda::std::span<float> channelRms) {
   const std::size_t visPerRow = re.extent(1);
   const std::size_t nRows = re.extent(0);
-  const std::size_t i =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t i = threadFlattenedId();
   if (i >= visPerRow) return;
   double value = 0.0;
   std::size_t count = 0;
@@ -43,10 +40,9 @@ __global__ void channelRmsKernel(MdSpan2D<const double> re,
 
 void k2_channel_rms(MdSpan2D<const double> re, MdSpan2D<const double> im,
                     cuda::std::span<float> channelRms, dysco_stream_t stream) {
-  constexpr unsigned kThreads = 256;
+  constexpr unsigned kThreads = kThreadBlockSize;
   const std::size_t visPerRow = re.extent(1);
-  const auto blocks =
-      static_cast<unsigned>((visPerRow + kThreads - 1) / kThreads);
+  const auto blocks = gridFor(visPerRow, kThreads);
   DYSCO_LAUNCH_1D(channelRmsKernel, blocks, kThreads, stream, re, im,
                   channelRms);
 }

@@ -25,6 +25,7 @@
 
 #include <cuda/atomic>
 #include <cuda/functional>
+#include <cuda/std/bit>
 #include <cuda/std/cmath>
 #include <cuda/std/cstdint>
 #include <cuda/std/mdspan>
@@ -48,29 +49,33 @@ using MdSpan2D =
   return cuda::std::fmax(cuda::std::fmax(re, im), -cuda::std::fmin(re, im));
 }
 
+/// Quiet NaN with the canonical IEEE-754 bit pattern (0x7ff8...), identical to
+/// what `std::numeric_limits<double>::quiet_NaN()` produces on the CPU side.
+/// A compile-time constant instead of a `nan("")` call.
+inline constexpr cuda::std::uint64_t kQuietNaNBits = 0x7ff8000000000000ull;
+
 /// Reinterpret a *non-negative* double as an unsigned 64-bit key.  The IEEE-754
 /// bit patterns of non-negative doubles are order-isomorphic to unsigned
 /// integers, so an integer `fetch_max` computes a double maximum.
-[[nodiscard]] DYSCO_HD DYSCO_INLINE cuda::std::uint64_t
+[[nodiscard]] DYSCO_HD DYSCO_INLINE constexpr cuda::std::uint64_t
 doubleToMaxKey(double value) noexcept {
-  // Bit-cast through a union: `cuda::std::bit_cast` is not available on every
-  // supported host compiler, and the union is the canonical CUDA idiom.
-  union {
-    double d;
-    cuda::std::uint64_t u;
-  } bits;
-  bits.d = value;
-  return bits.u;
+  return cuda::std::bit_cast<cuda::std::uint64_t>(value);
 }
 
-[[nodiscard]] DYSCO_HD DYSCO_INLINE double maxKeyToDouble(
+[[nodiscard]] DYSCO_HD DYSCO_INLINE constexpr double maxKeyToDouble(
     cuda::std::uint64_t key) noexcept {
-  union {
-    cuda::std::uint64_t u;
-    double d;
-  } bits;
-  bits.u = key;
-  return bits.d;
+  return cuda::std::bit_cast<double>(key);
+}
+
+/// Flattened index of this thread in a 1-D grid; the loop entry of a
+/// grid-stride loop whose stride is `gridStrideSize()`.
+[[nodiscard]] DYSCO_HD DYSCO_INLINE std::size_t threadFlattenedId() noexcept {
+  return static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+}
+
+/// Total number of threads in a 1-D grid; the stride of a grid-stride loop.
+[[nodiscard]] DYSCO_HD DYSCO_INLINE std::size_t gridStrideSize() noexcept {
+  return static_cast<std::size_t>(gridDim.x) * blockDim.x;
 }
 
 /// Block-scoped atomic maximum of non-negative double keys.  On shared memory

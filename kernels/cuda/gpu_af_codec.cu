@@ -46,13 +46,6 @@ template <class T>
   DYSCO_MANAGED_ALLOC(&raw, count * sizeof(T));
   return ManagedBuffer<T>(raw);
 }
-
-/// Build the row-major 2D view the kernels expect from a flat buffer.
-template <class T>
-[[nodiscard]] MdSpan2D<T> asMatrix(T *data, std::size_t rows,
-                                   std::size_t cols) noexcept {
-  return MdSpan2D<T>(data, rows, cols);
-}
 }  // namespace
 
 struct AfCodec::Impl {
@@ -117,6 +110,24 @@ struct AfCodec::Impl {
   [[nodiscard]] double maxLevel() const noexcept {
     return decCount == 0 ? 0.0 : static_cast<double>(decValues.get()[decCount - 1]);
   }
+
+  // Row-major 2-D views of the managed workspaces, as the kernels expect them.
+  [[nodiscard]] MdSpan2D<double> reMatrix() const noexcept {
+    return MdSpan2D<double>(re.get(), nRows, visPerRow);
+  }
+  [[nodiscard]] MdSpan2D<double> imMatrix() const noexcept {
+    return MdSpan2D<double>(im.get(), nRows, visPerRow);
+  }
+  /// Interleaved (re, im) per visibility, shape [nVis, 2].
+  [[nodiscard]] MdSpan2D<unsigned int> symbolsMatrix() const noexcept {
+    return MdSpan2D<unsigned int>(symbols.get(), nVis, 2);
+  }
+  [[nodiscard]] MdSpan2D<float> outMatrix() const noexcept {
+    return MdSpan2D<float>(out.get(), nVis, 2);
+  }
+  [[nodiscard]] MdSpan2D<const float> inInterleavedMatrix() const noexcept {
+    return MdSpan2D<const float>(inInterleaved.get(), nVis, 2);
+  }
 };
 
 AfCodec::AfCodec(std::size_t nRows, std::size_t nChannels, std::size_t nPol,
@@ -150,17 +161,14 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
   std::memcpy(s.ant1.get(), ant1.data(), s.nRows * sizeof(int));
   std::memcpy(s.ant2.get(), ant2.data(), s.nRows * sizeof(int));
 
-  k1_gather_convert(asMatrix(s.inInterleaved.get(), s.nVis, 2),
+  k1_gather_convert(s.inInterleavedMatrix(),
                     cuda::std::span<double>(s.re.get(), s.nVis),
                     cuda::std::span<double>(s.im.get(), s.nVis), stream);
 
-  const MdSpan2D<double> re(s.re.get(), s.nRows, s.visPerRow);
-  const MdSpan2D<double> im(s.im.get(), s.nRows, s.visPerRow);
+  const MdSpan2D<double> re = s.reMatrix();
+  const MdSpan2D<double> im = s.imMatrix();
 
-  k2_channel_rms(asMatrix(static_cast<const double *>(s.re.get()), s.nRows,
-                          s.visPerRow),
-                 asMatrix(static_cast<const double *>(s.im.get()), s.nRows,
-                          s.visPerRow),
+  k2_channel_rms(re, im,
                  cuda::std::span<float>(s.meta.get(), s.visPerRow), stream);
   k5a_apply_channel_norm(cuda::std::span<double>(s.re.get(), s.nVis),
                          cuda::std::span<double>(s.im.get(), s.nVis),
@@ -170,12 +178,8 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
                          stream);
 
   for (std::size_t pol = 0; pol != s.nPol; ++pol) {
-    k3_antenna_rms_matrix(asMatrix(static_cast<const double *>(s.re.get()),
-                                   s.nRows, s.visPerRow),
-                          asMatrix(static_cast<const double *>(s.im.get()),
-                                   s.nRows, s.visPerRow),
-                          ant1View, ant2View, s.nChannels, s.nPol, pol,
-                          MdSpan2D<double>(s.matrix.get(), s.nAnt, s.nAnt),
+    k3_antenna_rms_matrix(re, im, ant1View, ant2View, s.nChannels, s.nPol,
+                          pol, MdSpan2D<double>(s.matrix.get(), s.nAnt, s.nAnt),
                           stream);
     k4_antenna_gain_solve(MdSpan2D<const double>(s.matrix.get(), s.nAnt,
                                                  s.nAnt),
@@ -200,10 +204,8 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
                   metaView, s.maxLevel(), stream);
   }
 
-  k7_quantize_dither(
-      asMatrix(static_cast<const double *>(s.re.get()), s.nRows, s.visPerRow),
-      asMatrix(static_cast<const double *>(s.im.get()), s.nRows, s.visPerRow),
-      cuda::std::span<const float>(s.decValues.get(), s.decCount),
+  k7_quantize_dither(re, im,
+                     cuda::std::span<const float>(s.decValues.get(), s.decCount),
       static_cast<std::uint32_t>(seed), static_cast<std::uint32_t>(seed >> 32),
       blockIndex, cuda::std::span<unsigned int>(s.symbols.get(), 2 * s.nVis),
       stream);
@@ -238,14 +240,13 @@ void AfCodec::decode(dysco::span<const unsigned char> packedIn,
                 s.bits,
                 cuda::std::span<unsigned int>(s.symbols.get(), 2 * s.nVis),
                 stream);
-  d2_dequantize(
-      asMatrix(static_cast<const unsigned int *>(s.symbols.get()), s.nVis, 2),
-      cuda::std::span<const float>(s.meta.get(), s.visPerRow + s.nPol * s.nAnt),
-      cuda::std::span<const int>(s.ant1.get(), s.nRows),
-      cuda::std::span<const int>(s.ant2.get(), s.nRows), s.nRows, s.nChannels,
-      s.nPol, s.nAnt,
-      cuda::std::span<const float>(s.decValues.get(), s.decCount),
-      asMatrix(s.out.get(), s.nVis, 2), stream);
+  d2_dequantize(s.symbolsMatrix(),
+                cuda::std::span<const float>(s.meta.get(), s.visPerRow + s.nPol * s.nAnt),
+                cuda::std::span<const int>(s.ant1.get(), s.nRows),
+                cuda::std::span<const int>(s.ant2.get(), s.nRows), s.nRows, s.nChannels,
+                s.nPol, s.nAnt,
+                cuda::std::span<const float>(s.decValues.get(), s.decCount),
+                s.outMatrix(), stream);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(interleavedOut.data(), s.out.get(), 2 * s.nVis * sizeof(float));
 }

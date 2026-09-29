@@ -9,12 +9,14 @@
 #include "cuda_kernels.h"
 #include "philox_rng.h"
 
-#include <cmath>
-
 namespace dyscostman {
 namespace gpu {
 
 namespace {
+
+/// Half the 32-bit dither range: matches the CPU
+/// `std::uniform_int_distribution<unsigned>(0, (1u<<31)-1)` dither domain.
+constexpr float kDitherRange = 2147483648.0f;
 
 [[nodiscard]] DYSCO_HD DYSCO_INLINE unsigned int quantizeDither(
     float value, cuda::std::span<const float> decValues,
@@ -35,8 +37,7 @@ namespace {
   const float rightValue = decValues[lo];
   const float leftValue = decValues[lo - 1];
   const float ditherMark =
-      static_cast<float>(2147483648.0f * (value - leftValue) /
-                         (rightValue - leftValue));
+      kDitherRange * (value - leftValue) / (rightValue - leftValue);
   return ditherMark > static_cast<float>(dither)
              ? static_cast<unsigned int>(lo)
              : static_cast<unsigned int>(lo - 1);
@@ -49,8 +50,7 @@ __global__ void quantizeFlatKernel(cuda::std::span<const float> values,
                                    uint32_t seedLo, uint32_t seedHi,
                                    uint64_t blockIndex,
                                    cuda::std::span<unsigned int> symbols) {
-  const std::size_t i =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t i = threadFlattenedId();
   if (i >= values.size()) return;
   const unsigned int dither =
       random123::ditherValue(seedLo, seedHi, blockIndex, i);
@@ -65,8 +65,7 @@ __global__ void quantizeDitherKernel(MdSpan2D<const double> re,
                                      cuda::std::span<unsigned int> symbols) {
   const std::size_t visPerRow = re.extent(1);
   const std::size_t nVis = re.extent(0) * visPerRow;
-  const std::size_t i =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t i = threadFlattenedId();
   if (i >= nVis) return;
   const std::size_t row = i / visPerRow;
   const std::size_t vi = i - row * visPerRow;
@@ -89,10 +88,9 @@ void k7_quantize_flat(cuda::std::span<const float> values,
                       std::uint64_t blockIndex,
                       cuda::std::span<unsigned int> symbols,
                       dysco_stream_t stream) {
-  constexpr unsigned kThreads = 256;
+  constexpr unsigned kThreads = kThreadBlockSize;
   const std::size_t count = values.size();
-  const auto blocks =
-      static_cast<unsigned>((count + kThreads - 1) / kThreads);
+  const auto blocks = gridFor(count, kThreads);
   DYSCO_LAUNCH_1D(quantizeFlatKernel, blocks, kThreads, stream, values,
                   decValues, seedLo, seedHi, blockIndex, symbols);
 }
@@ -103,10 +101,9 @@ void k7_quantize_dither(MdSpan2D<const double> re, MdSpan2D<const double> im,
                         std::uint64_t blockIndex,
                         cuda::std::span<unsigned int> symbols,
                         dysco_stream_t stream) {
-  constexpr unsigned kThreads = 256;
+  constexpr unsigned kThreads = kThreadBlockSize;
   const std::size_t nVis = re.extent(0) * re.extent(1);
-  const auto blocks =
-      static_cast<unsigned>((nVis + kThreads - 1) / kThreads);
+  const auto blocks = gridFor(nVis, kThreads);
   DYSCO_LAUNCH_1D(quantizeDitherKernel, blocks, kThreads, stream, re, im,
                   decValues, seedLo, seedHi, blockIndex, symbols);
 }

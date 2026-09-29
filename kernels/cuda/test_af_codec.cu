@@ -88,8 +88,7 @@ static int runCase(size_t nAnt, size_t nChannels, size_t nPol, unsigned bits,
   bool ok = true;
   // Without fit-to-max the GPU path is bit-identical to the CPU reference.
   // With fit-to-max the default GPU algorithm is the parallel Jacobi variant,
-  // which is only required to agree within a tolerance (see
-  // instructions-fit-to-max-gpu.md).
+  // which is only required to agree within a tolerance.
   if (!fitToMaximum) {
     ok &= compareBytes(metaCpu.data(), metaGpu.data(),
                        metaCount * sizeof(float), "metadata");

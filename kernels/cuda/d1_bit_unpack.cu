@@ -9,8 +9,7 @@ namespace {
 
 __global__ void unpack8Kernel(cuda::std::span<const unsigned char> packed,
                               cuda::std::span<unsigned int> symbols) {
-  const std::size_t i =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t i = threadFlattenedId();
   if (i >= symbols.size()) return;
   symbols[i] = packed[i];
 }
@@ -18,8 +17,7 @@ __global__ void unpack8Kernel(cuda::std::span<const unsigned char> packed,
 __global__ void unpackGenericKernel(cuda::std::span<const unsigned char> packed,
                                     unsigned bits,
                                     cuda::std::span<unsigned int> symbols) {
-  const std::size_t symIdx =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t symIdx = threadFlattenedId();
   if (symIdx >= symbols.size()) return;
   const std::size_t bit0 = symIdx * bits;
   unsigned v = 0;
@@ -35,9 +33,8 @@ __global__ void unpackGenericKernel(cuda::std::span<const unsigned char> packed,
 void d1_bit_unpack(cuda::std::span<const unsigned char> packed, unsigned bits,
                    cuda::std::span<unsigned int> symbols,
                    dysco_stream_t stream) {
-  constexpr unsigned kThreads = 256;
-  const auto blocks =
-      static_cast<unsigned>((symbols.size() + kThreads - 1) / kThreads);
+  constexpr unsigned kThreads = kThreadBlockSize;
+  const auto blocks = gridFor(symbols.size(), kThreads);
   if (bits == 8)
     DYSCO_LAUNCH_1D(unpack8Kernel, blocks, kThreads, stream, packed, symbols);
   else

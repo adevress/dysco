@@ -17,11 +17,8 @@ __global__ void gatherConvertKernel(MdSpan2D<const float> interleaved,
                                     cuda::std::span<double> re,
                                     cuda::std::span<double> im) {
   const std::size_t nVis = interleaved.extent(0);
-  const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * blockDim.x;
-  for (std::size_t i =
-           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       i < nVis; i += stride) {
+  const std::size_t stride = gridStrideSize();
+  for (std::size_t i = threadFlattenedId(); i < nVis; i += stride) {
     // A complex<float> is two floats; the mdspan's second extent is 2.
     re[i] = static_cast<double>(interleaved(i, 0));
     im[i] = static_cast<double>(interleaved(i, 1));
@@ -34,9 +31,8 @@ void k1_gather_convert(MdSpan2D<const float> interleaved,
                        cuda::std::span<double> re, cuda::std::span<double> im,
                        dysco_stream_t stream) {
   const std::size_t nVis = interleaved.extent(0);
-  constexpr unsigned kThreads = 256;
-  const auto blocks =
-      static_cast<unsigned>((nVis + kThreads - 1) / kThreads);
+  constexpr unsigned kThreads = kThreadBlockSize;
+  const auto blocks = gridFor(nVis, kThreads);
   DYSCO_LAUNCH_1D(gatherConvertKernel, blocks, kThreads, stream, interleaved,
                   re, im);
 }

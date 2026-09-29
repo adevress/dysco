@@ -18,11 +18,8 @@ __global__ void applyChannelNormKernel(cuda::std::span<double> re,
                                        std::size_t visPerRow,
                                        cuda::std::span<const float> channelRms) {
   const std::size_t nVis = re.size();
-  const std::size_t stride =
-      static_cast<std::size_t>(gridDim.x) * blockDim.x;
-  for (std::size_t i =
-           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       i < nVis; i += stride) {
+  const std::size_t stride = gridStrideSize();
+  for (std::size_t i = threadFlattenedId(); i < nVis; i += stride) {
     const double rms = static_cast<double>(channelRms[i % visPerRow]);
     // Match the CPU encoder: a zero RMS leaves the (zero) values untouched
     // instead of dividing 0/0 and producing NaNs.
@@ -40,8 +37,7 @@ __global__ void applyAntennaNormKernel(MdSpan2D<double> re,
                                        std::size_t nChannels, std::size_t nPol,
                                        std::size_t pol,
                                        cuda::std::span<const double> rmsPerAntenna) {
-  const std::size_t row =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t row = threadFlattenedId();
   if (row >= re.extent(0)) return;
   const double mul =
       rmsPerAntenna[static_cast<std::size_t>(ant1[row])] *
@@ -60,10 +56,9 @@ void k5a_apply_channel_norm(cuda::std::span<double> re,
                             cuda::std::span<double> im, std::size_t visPerRow,
                             cuda::std::span<const float> channelRms,
                             dysco_stream_t stream) {
-  constexpr unsigned kThreads = 256;
+  constexpr unsigned kThreads = kThreadBlockSize;
   const std::size_t nVis = re.size();
-  const auto blocks =
-      static_cast<unsigned>((nVis + kThreads - 1) / kThreads);
+  const auto blocks = gridFor(nVis, kThreads);
   DYSCO_LAUNCH_1D(applyChannelNormKernel, blocks, kThreads, stream, re, im,
                   visPerRow, channelRms);
 }
@@ -75,9 +70,8 @@ void k5b_apply_antenna_norm(MdSpan2D<double> re, MdSpan2D<double> im,
                             std::size_t pol,
                             cuda::std::span<const double> rmsPerAntenna,
                             dysco_stream_t stream) {
-  constexpr unsigned kThreads = 256;
-  const auto blocks = static_cast<unsigned>(
-      (re.extent(0) + kThreads - 1) / kThreads);
+  constexpr unsigned kThreads = kThreadBlockSize;
+  const auto blocks = gridFor(re.extent(0), kThreads);
   DYSCO_LAUNCH_1D(applyAntennaNormKernel, blocks, kThreads, stream, re, im,
                   ant1, ant2, nChannels, nPol, pol, rmsPerAntenna);
 }

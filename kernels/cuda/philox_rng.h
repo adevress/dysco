@@ -27,8 +27,8 @@ namespace random123 {
 
 inline constexpr std::uint32_t kPhiloxMul0 = 0xD2511F53u;
 inline constexpr std::uint32_t kPhiloxMul1 = 0xCD9E8D57u;
-inline constexpr std::uint32_t kPhiloxWeys0 = 0x9E3779B9u;
-inline constexpr std::uint32_t kPhiloxWeys1 = 0xBB67AE85u;
+inline constexpr std::uint32_t kPhiloxWeyl0 = 0x9E3779B9u;
+inline constexpr std::uint32_t kPhiloxWeyl1 = 0xBB67AE85u;
 
 DYSCO_HD DYSCO_INLINE void mulhilo32(std::uint32_t a, std::uint32_t b,
                                      std::uint32_t &hi,
@@ -66,8 +66,8 @@ DYSCO_HD DYSCO_INLINE void philox4x32_10(std::uint32_t &c0, std::uint32_t &c1,
   for (int round = 0; round != 10; ++round) {
     philox4x32round(c0, c1, c2, c3, k0, k1);
     if (round != 9) {
-      k0 += kPhiloxWeys0;
-      k1 += kPhiloxWeys1;
+      k0 += kPhiloxWeyl0;
+      k1 += kPhiloxWeyl1;
     }
   }
 }

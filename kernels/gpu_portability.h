@@ -39,11 +39,6 @@ typedef cudaStream_t dysco_stream_t;
 
 namespace dysco_gpu {
 
-[[nodiscard]] inline bool available() {
-  int count = 0;
-  return cudaGetDeviceCount(&count) == cudaSuccess && count > 0;
-}
-
 [[nodiscard]] inline std::string_view device_name() {
   static char name[256] = "none";
   int device = 0;
@@ -54,8 +49,6 @@ namespace dysco_gpu {
   }
   return std::string_view(name);
 }
-
-inline void synchronize() { cudaDeviceSynchronize(); }
 
 /// Deleter for managed buffers held by std::unique_ptr.
 struct ManagedDeleter {
@@ -89,9 +82,9 @@ struct ManagedDeleter {
 
 #else
 
-// Host-only compilation.  Device qualifiers vanish; the runtime helpers are
-// only declared (their definitions live in the accelerator translation unit)
-// to avoid an ODR clash with the accelerator definitions.
+// Host-only compilation.  Device qualifiers vanish; the runtime helper is only
+// declared (its definition lives in the accelerator translation unit) to avoid
+// an ODR clash with the accelerator definition.
 #define DYSCO_HD
 #define DYSCO_GLOBAL
 #define DYSCO_INLINE inline
@@ -99,9 +92,7 @@ typedef void* dysco_stream_t;
 #define DYSCO_DEFAULT_STREAM 0
 
 namespace dysco_gpu {
-[[nodiscard]] bool available();
 [[nodiscard]] std::string_view device_name();
-void synchronize();
 }  // namespace dysco_gpu
 
 #define DYSCO_GPU_CHECK(call) (void)(call)
