@@ -124,13 +124,9 @@ DyscoDataColumn::initializeEncodeThread() {
         break;
     }
   }
-  std::unique_ptr<ThreadData> newThreadData(new ThreadData(std::move(encoder)));
-  // Seed every thread from a random number
-  if (_randomize)
-    newThreadData->rnd.seed(_rnd());
-  else
-    std::cout << "Warning: New thread NOT seeded.\n";
-  return newThreadData;
+  // No per-thread RNG state: the dither is a pure function of the symbol's
+  // logical address (see kernels/philox_rng.h).
+  return std::make_unique<ThreadData>(std::move(encoder));
 }
 
 void DyscoDataColumn::encode(ThreadDataBase *threadData,
@@ -138,14 +134,9 @@ void DyscoDataColumn::encode(ThreadDataBase *threadData,
                              symbol_t *symbolBuffer, size_t nAntennae,
                              uint64_t blockIndex) {
   ThreadData &data = static_cast<ThreadData &>(*threadData);
-  if (_randomGenerator == RandomGenerator::kPhilox) {
-    data.encoder->EncodeWithCounterRng(*_gausEncoder, *buffer, metaBuffer,
-                                       symbolBuffer, nAntennae, _philoxSeed,
-                                       blockIndex);
-  } else {
-    data.encoder->EncodeWithDithering(*_gausEncoder, *buffer, metaBuffer,
-                                      symbolBuffer, nAntennae, data.rnd);
-  }
+  data.encoder->EncodeWithCounterRng(*_gausEncoder, *buffer, metaBuffer,
+                                     symbolBuffer, nAntennae, _philoxSeed,
+                                     blockIndex);
 }
 
 size_t DyscoDataColumn::encodePacked(ThreadDataBase *threadData,
@@ -170,20 +161,6 @@ size_t DyscoDataColumn::metaDataFloatCount(size_t nRows, size_t nPolarizations,
 size_t DyscoDataColumn::symbolCount(size_t nRowsInBlock, size_t nPolarizations,
                                     size_t nChannels) const {
   return _decoder->SymbolCount(nRowsInBlock, nPolarizations, nChannels);
-}
-
-size_t DyscoDataColumn::defaultThreadCount() const {
-  if (_randomGenerator == RandomGenerator::kPhilox) {
-    // Counter-based dithering is thread-order independent.
-    return ThreadedDyscoColumn::defaultThreadCount();
-  }
-  if (!_randomize) {
-    std::cout
-        << "Warning: using only one thread to avoid randomizing the results.\n";
-    return 1;
-  } else {
-    return ThreadedDyscoColumn::defaultThreadCount();
-  }
 }
 
 }  // namespace dyscostman

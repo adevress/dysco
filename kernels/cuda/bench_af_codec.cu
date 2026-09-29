@@ -1,4 +1,4 @@
-// Benchmark: CPU (Mersenne Twister and Philox) vs GPU AF encoder/decoder.
+// Benchmark: CPU reference (Philox) vs GPU AF encoder/decoder.
 //
 // The block under test is either the built-in synthetic MWA-like block
 // (128 antennas, 8256 baselines, 96 channels, 4 polarizations, 8 bits) or the
@@ -6,8 +6,6 @@
 //
 // Reported for both with and without `fitToMaximum`:
 //
-//   * the production CPU encoder with the historical `std::mt19937` dither
-//     (`AFTimeBlockEncoder::EncodeWithDithering`),
 //   * the CPU reference encoder with the counter-based Philox dither
 //     (`cpuAfEncode`, bit-identical to the GPU),
 //   * the CUDA encode/decode codec.
@@ -17,9 +15,6 @@
 #include "gpu_af_codec.h"
 
 #include "../af_reference.h"
-#include "../../aftimeblockencoder.h"
-#include "../../stochasticencoder.h"
-#include "../../timeblockbuffer.h"
 
 #include <chrono>
 #include <fstream>
@@ -128,25 +123,6 @@ BlockData loadFlatBlock(const std::string &path) {
   return block;
 }
 
-/// Build the CPU `TimeBlockBuffer` view of the interleaved float input.
-TimeBlockBuffer<std::complex<float>> makeBuffer(const BlockData &block) {
-  const std::size_t visPerRow = block.nChannels * block.nPol;
-  TimeBlockBuffer<std::complex<float>> buffer(block.nPol, block.nChannels);
-  buffer.resize(block.nRows);
-  for (std::size_t r = 0; r != block.nRows; ++r) {
-    auto &row = buffer[r];
-    row.antenna1 = static_cast<std::size_t>(block.ant1[r]);
-    row.antenna2 = static_cast<std::size_t>(block.ant2[r]);
-    row.visibilities.resize(visPerRow);
-    for (std::size_t i = 0; i != visPerRow; ++i) {
-      const std::size_t base = (r * visPerRow + i) * 2;
-      row.visibilities[i] =
-          std::complex<float>(block.input[base], block.input[base + 1]);
-    }
-  }
-  return buffer;
-}
-
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -192,24 +168,11 @@ int main(int argc, char **argv) {
   std::vector<float> metaCpu(metaCount), metaGpu(metaCount);
   std::vector<std::uint32_t> symCpu(2 * nVis), symGpu(2 * nVis);
 
-  // Production CPU path (Mersenne Twister dither) needs the time-block buffer
-  // and the dictionary encoder.
-  StochasticEncoder<float> gausEncoder =
-      StochasticEncoder<float>::TruncatedGausEncoder(1u << bits, 2.5, 1.0);
-  TimeBlockBuffer<std::complex<float>> buffer = makeBuffer(block);
-  AFTimeBlockEncoder encoderMtNoFit(nPol, nChannels, /*fitToMaximum=*/false);
-  AFTimeBlockEncoder encoderMtFit(nPol, nChannels, /*fitToMaximum=*/true);
-  std::vector<float> metaMt(metaCount);
-  std::vector<std::uint32_t> symMt(2 * nVis);
-  std::mt19937 mtRng(1234);
-
   AfCodec codec(nRows, nChannels, nPol, nAnt, decValues, bits);
   std::vector<std::uint8_t> packedGpu(codec.packedByteCount());
   std::vector<float> outCpu(2 * nVis), outGpu(2 * nVis);
 
   // ---- warmup ----
-  encoderMtNoFit.EncodeWithDithering(gausEncoder, buffer, metaMt.data(),
-                                     symMt.data(), nAnt, mtRng);
   cpuAfEncode(block.input, block.ant1, block.ant2, nChannels, nPol, nAnt,
               decValues, seed, 0, false, metaCpu, symCpu);
   codec.encode(block.input, block.ant1, block.ant2, seed, 0, false, metaGpu,
@@ -218,21 +181,8 @@ int main(int argc, char **argv) {
               decValues, outCpu);
   codec.decode(packedGpu, metaGpu, block.ant1, block.ant2, outGpu);
 
-  // ---- CPU encode, Mersenne Twister ----
+  // ---- CPU encode (Philox reference) ----
   double t0 = nowSeconds();
-  for (std::size_t it = 0; it != iterations; ++it)
-    encoderMtNoFit.EncodeWithDithering(gausEncoder, buffer, metaMt.data(),
-                                       symMt.data(), nAnt, mtRng);
-  const double tCpuMt = (nowSeconds() - t0) / iterations;
-
-  t0 = nowSeconds();
-  for (std::size_t it = 0; it != iterations; ++it)
-    encoderMtFit.EncodeWithDithering(gausEncoder, buffer, metaMt.data(),
-                                     symMt.data(), nAnt, mtRng);
-  const double tCpuMtFit = (nowSeconds() - t0) / iterations;
-
-  // ---- CPU encode, Philox ----
-  t0 = nowSeconds();
   for (std::size_t it = 0; it != iterations; ++it)
     cpuAfEncode(block.input, block.ant1, block.ant2, nChannels, nPol, nAnt,
                 decValues, seed, it, false, metaCpu, symCpu);
@@ -273,21 +223,15 @@ int main(int argc, char **argv) {
   auto rate = [&](double sec) { return rawMiB / sec; };
 
   std::printf("\n%-32s %10s %14s\n", "stage", "time [s]", "throughput");
-  std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU encode (MT, no fit)", tCpuMt,
-              rate(tCpuMt));
-  std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU encode (MT, fit-to-max)",
-              tCpuMtFit, rate(tCpuMtFit));
   std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU encode (Philox, no fit)",
               tCpuPhi, rate(tCpuPhi));
   std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU encode (Philox, fit-to-max)",
               tCpuPhiFit, rate(tCpuPhiFit));
-  std::printf("%-32s %10.4f %11.1f MB/s  (vs MT %.1fx, vs Philox %.1fx)\n",
-              "GPU encode (no fit)", tGpu, rate(tGpu), tCpuMt / tGpu,
-              tCpuPhi / tGpu);
-  std::printf(
-      "%-32s %10.4f %11.1f MB/s  (vs MT-fit %.1fx, vs Philox-fit %.1fx)\n",
-      "GPU encode (fit-to-max)", tGpuFit, rate(tGpuFit), tCpuMtFit / tGpuFit,
-      tCpuPhiFit / tGpuFit);
+  std::printf("%-32s %10.4f %11.1f MB/s  (vs CPU %.1fx)\n",
+              "GPU encode (no fit)", tGpu, rate(tGpu), tCpuPhi / tGpu);
+  std::printf("%-32s %10.4f %11.1f MB/s  (vs CPU-fit %.1fx)\n",
+              "GPU encode (fit-to-max)", tGpuFit, rate(tGpuFit),
+              tCpuPhiFit / tGpuFit);
   std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU decode", tCpuDec,
               rate(tCpuDec));
   std::printf("%-32s %10.4f %11.1f MB/s  (speedup %.1fx)\n", "GPU decode",

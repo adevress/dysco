@@ -157,6 +157,7 @@ if(Boost_FOUND)
     tests/testdictionary.cc
     tests/testdithering.cc
     tests/testdyscostman.cc
+    tests/testphilox.cc
     tests/testtimeblockencoder.cc
     ${DYSCO_TEST_GPU_SOURCES})
   target_link_libraries(

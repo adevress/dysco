@@ -13,7 +13,6 @@
 
 #include "dyscodistribution.h"
 #include "dysconormalization.h"
-#include "dysco_random.h"
 #include "threadgroup.h"
 #include "uvector.h"
 
@@ -135,14 +134,6 @@ class DyscoStMan : public casacore::DataManager {
   void SetStaticSeed(bool staticSeed) { _staticSeed = staticSeed; }
 
   /**
-   * Select the random generator used for quantization dithering.  Must be
-   * called before columns are added.
-   */
-  void SetRandomGenerator(RandomGenerator generator) {
-    _randomGenerator = generator;
-  }
-
-  /**
    * Enable the CUDA backend for this storage manager (requires the library to
    * be built with ENABLE_CUDA).  Must be called before columns are added.
    */
@@ -150,8 +141,6 @@ class DyscoStMan : public casacore::DataManager {
 
   /// Enable/disable the AF fit-to-maximum post-normalization (default on).
   void SetFitToMaximum(bool enabled) { _fitToMaximum = enabled; }
-
-  RandomGenerator GetRandomGenerator() const { return _randomGenerator; }
 
   /**
    * This constructor is called by Casa when it needs to create a DyscoStMan.
@@ -429,7 +418,6 @@ class DyscoStMan : public casacore::DataManager {
   Normalization _normalization;
   double _studentTNu, _distributionTruncation;
   bool _staticSeed;
-  RandomGenerator _randomGenerator;
   bool _gpuEnabled;
   bool _fitToMaximum;
 

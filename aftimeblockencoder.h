@@ -6,7 +6,6 @@
 #include "uvector.h"
 
 #include <complex>
-#include <random>
 #include <vector>
 
 #include "timeblockencoder.h"
@@ -17,20 +16,12 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
 
   virtual ~AFTimeBlockEncoder() override;
 
-  virtual void EncodeWithDithering(
-      const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
-      float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
-      std::mt19937 &rnd) final override {
-    encode<true>(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount,
-                 &rnd);
-  }
-
   virtual void EncodeWithoutDithering(
       const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
       float *metaBuffer, symbol_t *symbolBuffer,
       size_t antennaCount) final override {
-    encode<false>(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount,
-                  0);
+    encodeUndithered(gausEncoder, buffer, metaBuffer, symbolBuffer,
+                     antennaCount);
   }
 
   /**
@@ -69,19 +60,13 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
     return nPol * (nChannels + nAntennae);
   }
 
-  // (Function is currently unused)
-  void Normalize(const dyscostman::StochasticEncoder<float> &gausEncoder,
-                 TimeBlockBuffer<std::complex<float>> &buffer,
-                 size_t antennaCount);
-
  private:
   void calculateAntennaeRMS(const std::vector<DBufferRow> &data,
                             size_t polIndex, size_t antennaCount);
 
-  template <bool UseDithering>
-  void encode(const dyscostman::StochasticEncoder<float> &gausEncoder,
-              const FBuffer &buffer, float *metaBuffer, symbol_t *symbolBuffer,
-              size_t antennaCount, std::mt19937 *rnd);
+  void encodeUndithered(const dyscostman::StochasticEncoder<float> &gausEncoder,
+                        const FBuffer &buffer, float *metaBuffer,
+                        symbol_t *symbolBuffer, size_t antennaCount);
 
   void changeAntennaFactor(std::vector<DBufferRow> &data, float *metaBuffer,
                            size_t antennaIndex, size_t antennaCount,
@@ -94,7 +79,6 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
   bool _fitToMaximum;
 
   aocommon::UVector<double> _rmsPerChannel, _rmsPerAntenna;
-  std::uniform_int_distribution<unsigned> _ditherDist;
 };
 
 #endif

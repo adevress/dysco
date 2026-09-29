@@ -1,9 +1,11 @@
 #include "../aftimeblockencoder.h"
 #include "../dysconormalization.h"
+#include "../kernels/philox_rng.h"
 #include "../rftimeblockencoder.h"
 #include "../rowtimeblockencoder.h"
 #include "../stochasticencoder.h"
 
+#include <algorithm>
 #include <random>
 
 #include <boost/test/unit_test.hpp>
@@ -126,8 +128,9 @@ void TestTimeBlockEncoder(Normalization blockNormalization) {
   std::mt19937 rnd;
   std::normal_distribution<float> dist;
   StochasticEncoder<float> gausEncoder(256, 1.0, false);
-  std::uniform_int_distribution<unsigned> dither =
-      gausEncoder.GetDitherDistribution();
+  const std::uint64_t seed = 0x0123456789ABCDEFull;
+  const std::uint32_t seedLo = static_cast<std::uint32_t>(seed);
+  const std::uint32_t seedHi = static_cast<std::uint32_t>(seed >> 32);
 
   dist(rnd);
 
@@ -144,11 +147,18 @@ void TestTimeBlockEncoder(Normalization blockNormalization) {
           float f = 1.0;
           data[p + ch * nPol] = rndVal * f;
 
+          const std::uint64_t visibilityIndex =
+              static_cast<std::uint64_t>(blockRow) * (nChan * nPol) +
+              ch * nPol + p;
           std::complex<float> encodedVal(
-              gausEncoder.Decode(
-                  gausEncoder.EncodeWithDithering(rndVal.real(), dither(rnd))),
-              gausEncoder.Decode(
-                  gausEncoder.EncodeWithDithering(rndVal.imag(), dither(rnd))));
+              gausEncoder.Decode(gausEncoder.EncodeWithDithering(
+                  rndVal.real(),
+                  dyscostman::random123::ditherForVisibility(
+                      seedLo, seedHi, 0, visibilityIndex, 0))),
+              gausEncoder.Decode(gausEncoder.EncodeWithDithering(
+                  rndVal.imag(),
+                  dyscostman::random123::ditherForVisibility(
+                      seedLo, seedHi, 0, visibilityIndex, 1))));
           unscaledRMS.Include(encodedVal - rndVal);
         }
       }
@@ -168,8 +178,8 @@ void TestTimeBlockEncoder(Normalization blockNormalization) {
       encoder->SymbolCount(nAnt * (nAnt + 1) / 2));
 
   for (size_t i = 0; i != nIter; ++i)
-    encoder->EncodeWithDithering(gausEncoder, buffer, metaBuffer.data(),
-                                 symbolBuffer.data(), nAnt, rnd);
+    encoder->EncodeWithCounterRng(gausEncoder, buffer, metaBuffer.data(),
+                                  symbolBuffer.data(), nAnt, seed, i);
 
   for (size_t i = 0; i != nIter; ++i) {
     encoder->InitializeDecode(metaBuffer.data(), nRow, nAnt);
@@ -225,9 +235,9 @@ TimeBlockBuffer<std::complex<float>> EncodeDecode(Normalization block_normalizat
   aocommon::UVector<float> metaBuffer(metaDataCount);
   aocommon::UVector<TimeBlockEncoder::symbol_t> symbolBuffer(symbolCount);
 
-  std::mt19937 mt;
-  encoder->EncodeWithDithering(gausEncoder, buffer, metaBuffer.data(),
-                               symbolBuffer.data(), n_ant, mt);
+  encoder->EncodeWithCounterRng(gausEncoder, buffer, metaBuffer.data(),
+                                symbolBuffer.data(), n_ant,
+                                0x0123456789ABCDEFull, 0);
   return Decode(block_normalization, gausEncoder, n_ant, n_chan, n_pol, n_row,
              metaBuffer.data(), symbolBuffer.data());
 }
@@ -361,6 +371,91 @@ BOOST_AUTO_TEST_CASE(rf_dynamic_range) {
       ++row;
     }
   }
+}
+
+// Every encoder (AF, RF, Row) must implement the counter-based (Philox) path,
+// which is the only dithering path and must work without the CUDA backend.
+// This checks the properties the reproducibility argument rests on:
+// determinism for a fixed (seed, block) and block-index sensitivity.
+void TestCounterRng(Normalization blockNormalization) {
+  constexpr size_t nAnt = 6, nChan = 4, nPol = 2;
+  const size_t nRow = nAnt * (nAnt + 1) / 2;
+
+  TimeBlockBuffer<std::complex<float>> buffer(nPol, nChan);
+  std::mt19937 rnd(1234);
+  std::normal_distribution<float> dist;
+  std::vector<std::vector<std::complex<float>>> input(nRow);
+  std::vector<std::complex<float>> data(nChan * nPol);
+  size_t row = 0;
+  for (size_t a1 = 0; a1 != nAnt; ++a1) {
+    for (size_t a2 = a1; a2 != nAnt; ++a2) {
+      for (size_t i = 0; i != nChan * nPol; ++i)
+        data[i] = std::complex<float>(dist(rnd), dist(rnd));
+      buffer.SetData(row, a1, a2, data.data());
+      input[row] = data;
+      ++row;
+    }
+  }
+
+  StochasticEncoder<float> gausEncoder(256, 1.0, false);
+  std::unique_ptr<TimeBlockEncoder> encoder =
+      CreateEncoder(blockNormalization, nPol, nChan);
+  const size_t metaCount = encoder->MetaDataCount(nRow, nPol, nChan, nAnt);
+  const size_t symCount = encoder->SymbolCount(nRow);
+  aocommon::UVector<float> meta1(metaCount), meta2(metaCount);
+  aocommon::UVector<TimeBlockEncoder::symbol_t> sym1(symCount), sym2(symCount);
+
+  const uint64_t seed = 0x0123456789ABCDEFull;
+  encoder->EncodeWithCounterRng(gausEncoder, buffer, meta1.data(), sym1.data(),
+                                nAnt, seed, 0);
+  encoder->EncodeWithCounterRng(gausEncoder, buffer, meta2.data(), sym2.data(),
+                                nAnt, seed, 0);
+
+  // Pure function of (seed, block, symbol): repeated runs must be identical,
+  // independent of any thread scheduling.
+  BOOST_CHECK(std::equal(meta1.data(), meta1.data() + metaCount, meta2.data()));
+  BOOST_CHECK(std::equal(sym1.data(), sym1.data() + symCount, sym2.data()));
+
+  // The block index is part of the Philox counter: another block gets a
+  // different dither sequence.
+  aocommon::UVector<TimeBlockEncoder::symbol_t> symOtherBlock(symCount);
+  encoder->EncodeWithCounterRng(gausEncoder, buffer, meta2.data(),
+                                symOtherBlock.data(), nAnt, seed, 1);
+  BOOST_CHECK(
+      !std::equal(sym1.data(), sym1.data() + symCount, symOtherBlock.data()));
+
+  // The encoded block must still round-trip within the expected accuracy.
+  const TimeBlockBuffer<std::complex<float>> out =
+      Decode(blockNormalization, gausEncoder, nAnt, nChan, nPol, nRow,
+             meta1.data(), sym1.data());
+  double errorSum = 0.0, dataSum = 0.0;
+  row = 0;
+  for (size_t a1 = 0; a1 != nAnt; ++a1) {
+    for (size_t a2 = a1; a2 != nAnt; ++a2) {
+      if (a1 != a2) {  // AF does not store autocorrelations.
+        aocommon::UVector<std::complex<float>> outRow(nChan * nPol);
+        out.GetData(row, outRow.data());
+        for (size_t i = 0; i != nChan * nPol; ++i) {
+          errorSum += std::norm(outRow[i] - input[row][i]);
+          dataSum += std::norm(input[row][i]);
+        }
+      }
+      ++row;
+    }
+  }
+  BOOST_CHECK_LT(std::sqrt(errorSum), std::sqrt(dataSum) * 0.1);
+}
+
+BOOST_AUTO_TEST_CASE(af_counter_rng_deterministic_and_accurate) {
+  TestCounterRng(Normalization::kAF);
+}
+
+BOOST_AUTO_TEST_CASE(rf_counter_rng_deterministic_and_accurate) {
+  TestCounterRng(Normalization::kRF);
+}
+
+BOOST_AUTO_TEST_CASE(row_counter_rng_deterministic_and_accurate) {
+  TestCounterRng(Normalization::kRow);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

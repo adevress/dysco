@@ -6,7 +6,6 @@
 #include "uvector.h"
 
 #include <complex>
-#include <random>
 #include <vector>
 
 #include "timeblockencoder.h"
@@ -17,12 +16,12 @@ class RowTimeBlockEncoder : public TimeBlockEncoder {
 
   virtual ~RowTimeBlockEncoder() override {}
 
-  virtual void EncodeWithDithering(
+  virtual void EncodeWithCounterRng(
       const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
       float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
-      std::mt19937 &rnd) final override {
+      uint64_t seed, uint64_t blockIndex) final override {
     encode<true>(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount,
-                 &rnd);
+                 seed, blockIndex);
   }
 
   virtual void EncodeWithoutDithering(
@@ -30,7 +29,7 @@ class RowTimeBlockEncoder : public TimeBlockEncoder {
       float *metaBuffer, symbol_t *symbolBuffer,
       size_t antennaCount) final override {
     encode<false>(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount,
-                  0);
+                  0, 0);
   }
 
   virtual void InitializeDecode(const float *metaBuffer, size_t nRow,
@@ -64,11 +63,10 @@ class RowTimeBlockEncoder : public TimeBlockEncoder {
   template <bool UseDithering>
   void encode(const dyscostman::StochasticEncoder<float> &gausEncoder,
               const FBuffer &buffer, float *metaBuffer, symbol_t *symbolBuffer,
-              size_t antennaCount, std::mt19937 *rnd);
+              size_t antennaCount, uint64_t seed, uint64_t blockIndex);
 
   size_t _nPol, _nChannels;
 
-  std::uniform_int_distribution<unsigned> _ditherDist;
   aocommon::UVector<double> _rowFactors;
 };
 
