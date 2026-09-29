@@ -18,6 +18,10 @@
 #include "../kernels/cuda/philox_rng.h"
 #include "../stochasticencoder.h"
 
+// Boundary assertion: the production BytePacker (the storage format) is typed
+// in terms of `unsigned int`, while the GPU codec uses the fixed-width alias.
+static_assert(std::is_same_v<std::uint32_t, unsigned int>);
+
 #include <casacore/casa/Arrays/IPosition.h>
 #include <casacore/tables/DataMan/DataManager.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
@@ -54,7 +58,7 @@ struct GpuBlock {
   std::size_t nAnt = 0, nChan = 0, nPol = 0;
   std::size_t nRows = 0, visPerRow = 0, nVis = 0;
   std::vector<float> interleaved;  // 2*nVis
-  std::vector<int> ant1, ant2;
+  std::vector<std::int32_t> ant1, ant2;
 };
 
 GpuBlock MakeLadderBlock(std::size_t nAnt, std::size_t nChan,
@@ -70,8 +74,8 @@ GpuBlock MakeLadderBlock(std::size_t nAnt, std::size_t nChan,
   std::size_t r = 0;
   for (std::size_t a = 0; a != nAnt; ++a)
     for (std::size_t b = a; b != nAnt; ++b) {
-      block.ant1.push_back(static_cast<int>(a));
-      block.ant2.push_back(static_cast<int>(b));
+      block.ant1.push_back(static_cast<std::int32_t>(a));
+      block.ant2.push_back(static_cast<std::int32_t>(b));
       ++r;
     }
   return block;
@@ -92,7 +96,7 @@ std::vector<float> GpuRoundTrip(const GpuBlock& block,
   AfCodec codec(block.nRows, block.nChan, block.nPol, block.nAnt, decValues,
                 bits);
   std::vector<float> meta(block.visPerRow + block.nPol * block.nAnt);
-  std::vector<unsigned char> packed(codec.packedByteCount());
+  std::vector<std::uint8_t> packed(codec.packedByteCount());
   codec.encode(block.interleaved, block.ant1, block.ant2, seed, 0,
                fitToMaximum, meta, packed);
   std::vector<float> out(2 * block.nVis);
@@ -110,17 +114,17 @@ void CheckGpuMatchesCpu(const GpuBlock& block,
   const std::size_t symbolCount = 2 * block.nVis;
 
   std::vector<float> metaCpu(metaCount);
-  std::vector<unsigned int> symbolsCpu(symbolCount);
+  std::vector<std::uint32_t> symbolsCpu(symbolCount);
   cpuAfEncode(block.interleaved, block.ant1, block.ant2, block.nChan, block.nPol,
               block.nAnt, decValues, seed, 0, fitToMaximum, metaCpu,
               symbolsCpu);
-  std::vector<unsigned char> packedCpu((symbolCount * bits + 7) / 8);
+  std::vector<std::uint8_t> packedCpu((symbolCount * bits + 7) / 8);
   BytePacker::pack(bits, packedCpu.data(), symbolsCpu.data(), symbolCount);
 
   AfCodec codec(block.nRows, block.nChan, block.nPol, block.nAnt, decValues,
                 bits);
   std::vector<float> metaGpu(metaCount);
-  std::vector<unsigned char> packedGpu(codec.packedByteCount());
+  std::vector<std::uint8_t> packedGpu(codec.packedByteCount());
   codec.encode(block.interleaved, block.ant1, block.ant2, seed, 0,
                fitToMaximum, metaGpu, packedGpu);
 
@@ -135,7 +139,7 @@ void CheckGpuMatchesCpu(const GpuBlock& block,
 
     // The GPU packed stream must unpack (with the production BytePacker) to
     // the CPU symbols, and the GPU decode must match the CPU decode.
-    std::vector<unsigned int> symbolsFromGpu(symbolCount);
+    std::vector<std::uint32_t> symbolsFromGpu(symbolCount);
     BytePacker::unpack(bits, symbolsFromGpu.data(), packedGpu.data(),
                        symbolCount);
     BOOST_CHECK(symbolsFromGpu == symbolsCpu);
@@ -282,21 +286,21 @@ BOOST_AUTO_TEST_CASE(bytepacking) {
   std::mt19937 rnd(1);
   for (const unsigned bits : bitWidths) {
     for (std::size_t count : {1u, 7u, 15u, 31u, 64u, 257u, 1000u}) {
-      std::vector<unsigned int> symbols(count);
+      std::vector<std::uint32_t> symbols(count);
       const unsigned limit = (1u << bits);
       for (std::size_t i = 0; i != count; ++i)
         symbols[i] = rnd() % limit;
 
       const std::size_t packedBytes = (count * bits + 7) / 8;
-      std::vector<unsigned char> packedGpu(packedBytes, 0xAA);
+      std::vector<std::uint8_t> packedGpu(packedBytes, 0xAA);
       pack(symbols, bits, packedGpu);
 
-      std::vector<unsigned char> packedCpu(packedBytes, 0xAA);
+      std::vector<std::uint8_t> packedCpu(packedBytes, 0xAA);
       BytePacker::pack(bits, packedCpu.data(), symbols.data(), count);
       BOOST_CHECK_MESSAGE(packedGpu == packedCpu,
                           "bits=" << bits << " count=" << count);
 
-      std::vector<unsigned int> restoredGpu(count, 0);
+      std::vector<std::uint32_t> restoredGpu(count, 0);
       unpack(packedGpu, bits, restoredGpu);
       BOOST_CHECK_MESSAGE(restoredGpu == symbols,
                           "bits=" << bits << " count=" << count);
@@ -327,16 +331,16 @@ BOOST_AUTO_TEST_CASE(dictionary_lower_bound) {
     values.push_back(std::numeric_limits<float>::infinity());
 
     const std::uint64_t seed = 0x0123456789ABCDEFull;
-    std::vector<unsigned int> expected(values.size());
+    std::vector<std::uint32_t> expected(values.size());
     for (std::size_t i = 0; i != values.size(); ++i) {
       const auto seedLo = static_cast<std::uint32_t>(seed);
       const auto seedHi = static_cast<std::uint32_t>(seed >> 32);
-      const unsigned int dither =
+      const std::uint32_t dither =
           random123::ditherValue(seedLo, seedHi, 0, i);
       expected[i] = encoder.EncodeWithDithering(values[i], dither);
     }
 
-    std::vector<unsigned int> gpu(values.size());
+    std::vector<std::uint32_t> gpu(values.size());
     quantize(values, decValues, seed, 0, gpu);
     BOOST_CHECK_MESSAGE(gpu == expected, "dictionary mismatch at bits=" << bits);
   }
@@ -370,7 +374,7 @@ BOOST_AUTO_TEST_CASE(dithering_avg_deviation) {
   for (std::size_t r = 0; r != repetitions; ++r)
     std::copy(probes.begin(), probes.end(), values.begin() + r * probes.size());
 
-  std::vector<unsigned int> symbols(n);
+  std::vector<std::uint32_t> symbols(n);
   quantize(values, decValues, 424242, 0, symbols);
 
   std::vector<long double> sums(probes.size(), 0.0L);
@@ -401,7 +405,7 @@ BOOST_AUTO_TEST_CASE(encode_example) {
     values.reserve(probes.size() * repetitions);
     for (std::size_t r = 0; r != repetitions; ++r)
       values.insert(values.end(), probes.begin(), probes.end());
-    std::vector<unsigned int> symbols(values.size());
+    std::vector<std::uint32_t> symbols(values.size());
     quantize(values, decValues, 999, 0, symbols);
     std::vector<long double> sums(probes.size(), 0.0L);
     for (std::size_t r = 0; r != repetitions; ++r)

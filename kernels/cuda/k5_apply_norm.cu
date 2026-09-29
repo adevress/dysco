@@ -32,8 +32,8 @@ __global__ void applyChannelNormKernel(cuda::std::span<double> re,
 
 __global__ void applyAntennaNormKernel(MdSpan2D<double> re,
                                        MdSpan2D<double> im,
-                                       cuda::std::span<const int> ant1,
-                                       cuda::std::span<const int> ant2,
+                                       cuda::std::span<const std::int32_t> ant1,
+                                       cuda::std::span<const std::int32_t> ant2,
                                        std::size_t nChannels, std::size_t nPol,
                                        std::size_t pol,
                                        cuda::std::span<const double> rmsPerAntenna) {
@@ -56,7 +56,7 @@ void k5a_apply_channel_norm(cuda::std::span<double> re,
                             cuda::std::span<double> im, std::size_t visPerRow,
                             cuda::std::span<const float> channelRms,
                             dysco_stream_t stream) {
-  constexpr unsigned kThreads = kThreadBlockSize;
+  constexpr std::uint32_t kThreads = kThreadBlockSize;
   const std::size_t nVis = re.size();
   const auto blocks = gridFor(nVis, kThreads);
   DYSCO_LAUNCH_1D(applyChannelNormKernel, blocks, kThreads, stream, re, im,
@@ -64,13 +64,13 @@ void k5a_apply_channel_norm(cuda::std::span<double> re,
 }
 
 void k5b_apply_antenna_norm(MdSpan2D<double> re, MdSpan2D<double> im,
-                            cuda::std::span<const int> ant1,
-                            cuda::std::span<const int> ant2,
+                            cuda::std::span<const std::int32_t> ant1,
+                            cuda::std::span<const std::int32_t> ant2,
                             std::size_t nChannels, std::size_t nPol,
                             std::size_t pol,
                             cuda::std::span<const double> rmsPerAntenna,
                             dysco_stream_t stream) {
-  constexpr unsigned kThreads = kThreadBlockSize;
+  constexpr std::uint32_t kThreads = kThreadBlockSize;
   const auto blocks = gridFor(re.extent(0), kThreads);
   DYSCO_LAUNCH_1D(applyAntennaNormKernel, blocks, kThreads, stream, re, im,
                   ant1, ant2, nChannels, nPol, pol, rmsPerAntenna);

@@ -21,6 +21,7 @@
  */
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -41,7 +42,7 @@ namespace dysco_gpu {
 
 [[nodiscard]] inline std::string_view device_name() {
   static char name[256] = "none";
-  int device = 0;
+  std::int32_t device = 0;
   if (cudaGetDevice(&device) == cudaSuccess) {
     cudaDeviceProp properties{};
     if (cudaGetDeviceProperties(&properties, device) == cudaSuccess)

@@ -19,12 +19,12 @@
  *   interleaved              MdSpan2D<const float>[nVis, 2]
  *   re/im                    MdSpan2D<double>[nRows, visPerRow]
  *                            index = (row, ch*nPol + pol)
- *   ant1/ant2                span<int>[nRows]
+ *   ant1/ant2                span<std::int32_t>[nRows]
  *   channelRms               span<float>[visPerRow]
  *   matrix                   MdSpan2D<double>[nAnt, nAnt]
  *   antennaRms               span<float>[nPol*nAnt]  (meta order: [pol*nAnt + ant])
- *   symbols                  MdSpan2D<unsigned int>[nVis, 2]  (re, imag)
- *   packed                   span<unsigned char>[ceil(2*nVis*bits/8)]
+ *   symbols                  MdSpan2D<std::uint32_t>[nVis, 2]  (re, imag)
+ *   packed                   span<std::uint8_t>[ceil(2*nVis*bits/8)]
  */
 
 #include "../gpu_portability.h"
@@ -32,20 +32,30 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 namespace dyscostman {
 namespace gpu {
 
+// CPU↔GPU boundary assertions.  The CUDA runtime API and the kernel launch
+// configuration (`dim3`, `<<<>>>`, `cudaFuncSetAttribute`) are typed in terms
+// of `int`/`unsigned`, while the kernels use the fixed-width <cstdint> aliases.
+// These assertions enforce that the aliases *are* those types, so every
+// conversion across the boundary is exact.
+static_assert(std::is_same_v<std::int32_t, int>);
+static_assert(std::is_same_v<std::uint32_t, unsigned int>);
+static_assert(std::is_same_v<std::uint8_t, unsigned char>);
+
 /// Default 1-D block size for the simple element-wise kernels.
-inline constexpr unsigned kThreadBlockSize = 256;
+inline constexpr std::uint32_t kThreadBlockSize = 256;
 
 /// Number of blocks needed to cover `n` elements with `threads` threads, at
 /// least one.  All kernels are grid-stride or bounds-checked, so an
 /// over-estimate is harmless.
-[[nodiscard]] inline unsigned gridFor(std::size_t n,
-                                      unsigned threads) noexcept {
+[[nodiscard]] inline std::uint32_t gridFor(
+    std::size_t n, std::uint32_t threads) noexcept {
   const std::size_t blocks = (n + threads - 1) / threads;
-  return static_cast<unsigned>(blocks == 0 ? 1 : blocks);
+  return static_cast<std::uint32_t>(blocks == 0 ? 1 : blocks);
 }
 
 // ---------------------------------------------------------------- k1_gather_convert
@@ -60,8 +70,8 @@ void k2_channel_rms(MdSpan2D<const double> re, MdSpan2D<const double> im,
 // ---------------------------------------------------------------- k3_antenna_rms_matrix
 void k3_antenna_rms_matrix(MdSpan2D<const double> re,
                            MdSpan2D<const double> im,
-                           cuda::std::span<const int> ant1,
-                           cuda::std::span<const int> ant2,
+                           cuda::std::span<const std::int32_t> ant1,
+                           cuda::std::span<const std::int32_t> ant2,
                            std::size_t nChannels, std::size_t nPol,
                            std::size_t pol, MdSpan2D<double> matrix,
                            dysco_stream_t stream);
@@ -81,8 +91,8 @@ void k5a_apply_channel_norm(cuda::std::span<double> re,
                             cuda::std::span<const float> channelRms,
                             dysco_stream_t stream);
 void k5b_apply_antenna_norm(MdSpan2D<double> re, MdSpan2D<double> im,
-                            cuda::std::span<const int> ant1,
-                            cuda::std::span<const int> ant2,
+                            cuda::std::span<const std::int32_t> ant1,
+                            cuda::std::span<const std::int32_t> ant2,
                             std::size_t nChannels, std::size_t nPol,
                             std::size_t pol,
                             cuda::std::span<const double> rmsPerAntenna,
@@ -95,8 +105,9 @@ void k5b_apply_antenna_norm(MdSpan2D<double> re, MdSpan2D<double> im,
 /// (bit-identical to the CPU encoder) is selected with the `DYSCO_K6_GREEDY`
 /// environment variable.
 void k6_fit_to_max(MdSpan2D<double> re, MdSpan2D<double> im,
-                   cuda::std::span<const int> ant1,
-                   cuda::std::span<const int> ant2, std::size_t nChannels,
+                   cuda::std::span<const std::int32_t> ant1,
+                   cuda::std::span<const std::int32_t> ant2,
+                   std::size_t nChannels,
                    std::size_t nPol, std::size_t nAnt,
                    cuda::std::span<float> meta, double maxLevel,
                    dysco_stream_t stream);
@@ -107,29 +118,30 @@ void k7_quantize_flat(cuda::std::span<const float> values,
                       cuda::std::span<const float> decValues,
                       std::uint32_t seedLo, std::uint32_t seedHi,
                       std::uint64_t blockIndex,
-                      cuda::std::span<unsigned int> symbols,
+                      cuda::std::span<std::uint32_t> symbols,
                       dysco_stream_t stream);
 void k7_quantize_dither(MdSpan2D<const double> re, MdSpan2D<const double> im,
                         cuda::std::span<const float> decValues,
                         std::uint32_t seedLo, std::uint32_t seedHi,
                         std::uint64_t blockIndex,
-                        cuda::std::span<unsigned int> symbols,
+                        cuda::std::span<std::uint32_t> symbols,
                         dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k8_bit_pack
-void k8_bit_pack(cuda::std::span<const unsigned int> symbols, unsigned bits,
-                 cuda::std::span<unsigned char> packed, dysco_stream_t stream);
+void k8_bit_pack(cuda::std::span<const std::uint32_t> symbols,
+                 std::uint32_t bits, cuda::std::span<std::uint8_t> packed,
+                 dysco_stream_t stream);
 
 // ---------------------------------------------------------------- d1_bit_unpack
-void d1_bit_unpack(cuda::std::span<const unsigned char> packed, unsigned bits,
-                   cuda::std::span<unsigned int> symbols,
+void d1_bit_unpack(cuda::std::span<const std::uint8_t> packed,
+                   std::uint32_t bits, cuda::std::span<std::uint32_t> symbols,
                    dysco_stream_t stream);
 
 // ---------------------------------------------------------------- d2_dequantize
-void d2_dequantize(MdSpan2D<const unsigned int> symbols,
+void d2_dequantize(MdSpan2D<const std::uint32_t> symbols,
                    cuda::std::span<const float> meta,
-                   cuda::std::span<const int> ant1,
-                   cuda::std::span<const int> ant2, std::size_t nRows,
+                   cuda::std::span<const std::int32_t> ant1,
+                   cuda::std::span<const std::int32_t> ant2, std::size_t nRows,
                    std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
                    cuda::std::span<const float> decValues,
                    MdSpan2D<float> interleaved, dysco_stream_t stream);

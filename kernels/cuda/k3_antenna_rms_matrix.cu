@@ -24,8 +24,8 @@ __global__ void initNaNKernel(cuda::std::span<double> matrix) {
 
 __global__ void antennaRmsMatrixKernel(MdSpan2D<const double> re,
                                        MdSpan2D<const double> im,
-                                       cuda::std::span<const int> ant1,
-                                       cuda::std::span<const int> ant2,
+                                       cuda::std::span<const std::int32_t> ant1,
+                                       cuda::std::span<const std::int32_t> ant2,
                                        std::size_t nChannels, std::size_t nPol,
                                        std::size_t pol,
                                        MdSpan2D<double> matrix) {
@@ -60,12 +60,12 @@ __global__ void antennaRmsMatrixKernel(MdSpan2D<const double> re,
 
 void k3_antenna_rms_matrix(MdSpan2D<const double> re,
                            MdSpan2D<const double> im,
-                           cuda::std::span<const int> ant1,
-                           cuda::std::span<const int> ant2,
+                           cuda::std::span<const std::int32_t> ant1,
+                           cuda::std::span<const std::int32_t> ant2,
                            std::size_t nChannels, std::size_t nPol,
                            std::size_t pol, MdSpan2D<double> matrix,
                            dysco_stream_t stream) {
-  constexpr unsigned kThreads = kThreadBlockSize;
+  constexpr std::uint32_t kThreads = kThreadBlockSize;
   const std::size_t matrixCount = matrix.extent(0) * matrix.extent(1);
   const auto initBlocks = gridFor(matrixCount, kThreads);
   DYSCO_LAUNCH_1D(initNaNKernel, initBlocks, kThreads, stream,

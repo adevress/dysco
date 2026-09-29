@@ -14,11 +14,11 @@ namespace {
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 /// K7 helper: the CPU mirror of quantizeDither().
-[[nodiscard]] unsigned int quantizeDitherRef(float value,
-                                             dysco::span<const float> decValues,
-                                             unsigned int dither) noexcept {
+[[nodiscard]] std::uint32_t quantizeDitherRef(
+    float value, dysco::span<const float> decValues,
+    std::uint32_t dither) noexcept {
   const std::size_t decCount = decValues.size();
-  if (!std::isfinite(value)) return static_cast<unsigned int>(decCount);
+  if (!std::isfinite(value)) return static_cast<std::uint32_t>(decCount);
   std::size_t lo = 0, hi = decCount;
   while (lo < hi) {
     const std::size_t mid = (lo + hi) >> 1;
@@ -28,15 +28,15 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       hi = mid;
   }
   if (lo == 0) return 0;
-  if (lo >= decCount) return static_cast<unsigned int>(decCount - 1);
+  if (lo >= decCount) return static_cast<std::uint32_t>(decCount - 1);
   const float rightValue = decValues[lo];
   const float leftValue = decValues[lo - 1];
   const float ditherMark =
       static_cast<float>(2147483648.0f * (value - leftValue) /
                          (rightValue - leftValue));
   return ditherMark > static_cast<float>(dither)
-             ? static_cast<unsigned int>(lo)
-             : static_cast<unsigned int>(lo - 1);
+             ? static_cast<std::uint32_t>(lo)
+             : static_cast<std::uint32_t>(lo - 1);
 }
 
 /// K4 mirror.
@@ -77,7 +77,8 @@ void solveAntennaGains(dysco::span<const double> matrix, std::size_t nAnt,
 /// algorithm.  This is what the CPU encoder keeps using; the GPU backend uses
 /// the parallel Jacobi variant (`kernels/cuda/k6_fit_to_max.cu`) instead.
 void fitToMaximumRef(dysco::span<double> re, dysco::span<double> im,
-                     dysco::span<const int> ant1, dysco::span<const int> ant2,
+                     dysco::span<const std::int32_t> ant1,
+                     dysco::span<const std::int32_t> ant2,
                      std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
                      dysco::span<float> meta, double maxLevel) {
   const std::size_t visPerRow = nChannels * nPol;
@@ -100,9 +101,9 @@ void fitToMaximumRef(dysco::span<double> re, dysco::span<double> im,
     for (std::size_t row = 0; row != nRows; ++row) {
       const auto a1 = static_cast<std::size_t>(ant1[row]);
       const auto a2 = static_cast<std::size_t>(ant2[row]);
-      const unsigned repeat = (a1 == antennaIndex ? 1u : 0u) +
-                              (a2 == antennaIndex ? 1u : 0u);
-      for (unsigned r = 0; r != repeat; ++r)
+      const std::uint32_t repeat =
+          (a1 == antennaIndex ? 1u : 0u) + (a2 == antennaIndex ? 1u : 0u);
+      for (std::uint32_t r = 0; r != repeat; ++r)
         for (std::size_t ch = 0; ch != nChannels; ++ch) {
           const std::size_t idx = row * visPerRow + ch * nPol + polIndex;
           re[idx] *= factor;
@@ -233,12 +234,13 @@ void fitToMaximumRef(dysco::span<double> re, dysco::span<double> im,
 }  // namespace
 
 void cpuAfEncode(dysco::span<const float> interleaved,
-                 dysco::span<const int> ant1, dysco::span<const int> ant2,
+                 dysco::span<const std::int32_t> ant1,
+                 dysco::span<const std::int32_t> ant2,
                  std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
                  dysco::span<const float> decValues, std::uint64_t seed,
                  std::uint64_t blockIndex, bool fitToMaximum,
                  dysco::span<float> metaOut,
-                 dysco::span<unsigned int> symbolsOut) {
+                 dysco::span<std::uint32_t> symbolsOut) {
   const std::size_t nRows = ant1.size();
   const std::size_t visPerRow = nChannels * nPol;
   const std::size_t nVis = nRows * visPerRow;
@@ -327,9 +329,10 @@ void cpuAfEncode(dysco::span<const float> interleaved,
   }
 }
 
-void cpuAfDecode(dysco::span<const unsigned int> symbols,
-                 dysco::span<const float> meta, dysco::span<const int> ant1,
-                 dysco::span<const int> ant2, std::size_t nChannels,
+void cpuAfDecode(dysco::span<const std::uint32_t> symbols,
+                 dysco::span<const float> meta,
+                 dysco::span<const std::int32_t> ant1,
+                 dysco::span<const std::int32_t> ant2, std::size_t nChannels,
                  std::size_t nPol, std::size_t nAnt,
                  dysco::span<const float> decValues,
                  dysco::span<float> interleavedOut) {
@@ -347,8 +350,8 @@ void cpuAfDecode(dysco::span<const unsigned int> symbols,
         static_cast<double>(meta[visPerRow + pol * nAnt + ant1[row]]) *
         static_cast<double>(meta[visPerRow + pol * nAnt + ant2[row]]);
     const double factor = chRms * antFac;
-    const unsigned int sRe = symbols[i * 2];
-    const unsigned int sIm = symbols[i * 2 + 1];
+    const std::uint32_t sRe = symbols[i * 2];
+    const std::uint32_t sIm = symbols[i * 2 + 1];
     const double vRe =
         sRe < decCount ? static_cast<double>(decValues[sRe]) : kNaN;
     const double vIm =

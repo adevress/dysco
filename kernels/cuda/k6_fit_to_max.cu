@@ -62,8 +62,8 @@ namespace gpu {
 
 namespace {
 
-constexpr unsigned kK6Block = 256;
-constexpr unsigned kMaxGridBlocks = 4096;
+constexpr std::uint32_t kK6Block = 256;
+constexpr std::uint32_t kMaxGridBlocks = 4096;
 
 // Damping tolerances of the damped-simultaneous rounds: a channel factor is
 // considered settled below a relative headroom of 0.1%, an antenna factor
@@ -80,8 +80,8 @@ constexpr double kEpsAntenna = 1e-2;
 /// in shared memory before a single global atomic per entry per block.
 __global__ void k6a_reduce_channel_max(MdSpan2D<const double> re,
                                        MdSpan2D<const double> im,
-                                       cuda::std::span<const int> ant1,
-                                       cuda::std::span<const int> ant2,
+                                       cuda::std::span<const std::int32_t> ant1,
+                                       cuda::std::span<const std::int32_t> ant2,
                                        cuda::std::span<double> L) {
   const std::size_t visPerRow = re.extent(1);
   extern __shared__ cuda::std::uint64_t sharedKeys[];
@@ -146,12 +146,12 @@ __global__ void k6a_apply_channel_fit(MdSpan2D<double> re,
 /// atomic per entry per block.
 __global__ void k6b_reduce(MdSpan2D<const double> re,
                            MdSpan2D<const double> im,
-                           cuda::std::span<const int> ant1,
-                           cuda::std::span<const int> ant2,
+                           cuda::std::span<const std::int32_t> ant1,
+                           cuda::std::span<const std::int32_t> ant2,
                            std::size_t nPol, std::size_t nAnt,
                            cuda::std::span<double> L,
                            cuda::std::span<double> M,
-                           cuda::std::span<int, 1> doneFlag) {
+                           cuda::std::span<std::int32_t, 1> doneFlag) {
   if (doneFlag[0]) return;  // converged: remaining rounds are no-ops
   const std::size_t visPerRow = re.extent(1);
   const std::size_t nL = visPerRow;
@@ -168,8 +168,8 @@ __global__ void k6b_reduce(MdSpan2D<const double> re,
   const std::size_t stride = gridStrideSize();
   for (std::size_t idx = threadFlattenedId(); idx < n; idx += stride) {
     const std::size_t row = idx / visPerRow;
-    const int a1 = ant1[row];
-    const int a2 = ant2[row];
+    const std::int32_t a1 = ant1[row];
+    const std::int32_t a2 = ant2[row];
     if (a1 == a2) continue;  // skip autocorrelations
     const std::size_t vi = idx - row * visPerRow;  // = ch*nPol + pol
     const std::size_t pol = vi % nPol;
@@ -197,12 +197,12 @@ __global__ void k6b_factors(cuda::std::span<double> L,
                             cuda::std::span<double> M, std::size_t nChPol,
                             std::size_t nPolAnt, cuda::std::span<float> meta,
                             std::size_t visPerRow, double maxLevel,
-                            cuda::std::span<int, 1> progressFlag,
-                            cuda::std::span<const int, 1> doneFlag) {
+                            cuda::std::span<std::int32_t, 1> progressFlag,
+                            cuda::std::span<const std::int32_t, 1> doneFlag) {
   if (doneFlag[0]) return;
   const std::size_t stride = gridStrideSize();
   const std::size_t start = threadFlattenedId();
-  int progress = 0;
+  std::int32_t progress = 0;
 
   for (std::size_t vi = start; vi < nChPol; vi += stride) {
     const double l = L[vi];
@@ -229,11 +229,11 @@ __global__ void k6b_factors(cuda::std::span<double> L,
 
 /// Per-round elementwise application of `G · F_{a1} · F_{a2}` to all elements.
 __global__ void k6b_apply(MdSpan2D<double> re, MdSpan2D<double> im,
-                          cuda::std::span<const int> ant1,
-                          cuda::std::span<const int> ant2, std::size_t nPol,
+                          cuda::std::span<const std::int32_t> ant1,
+                          cuda::std::span<const std::int32_t> ant2, std::size_t nPol,
                           std::size_t nAnt, cuda::std::span<const double> G,
                           cuda::std::span<const double> F,
-                          cuda::std::span<const int, 1> doneFlag) {
+                          cuda::std::span<const std::int32_t, 1> doneFlag) {
   if (doneFlag[0]) return;
   const std::size_t visPerRow = re.extent(1);
   const std::size_t n = re.extent(0) * visPerRow;
@@ -256,8 +256,8 @@ __global__ void k6b_apply(MdSpan2D<double> re, MdSpan2D<double> im,
 /// Tiny end-of-round kernel: decides whether the next round is needed.  Kept
 /// separate from `k6b_apply` so that no block of the apply kernel can observe
 /// the new `doneFlag` and skip its share of the work.
-__global__ void k6b_mark_done(cuda::std::span<int, 1> doneFlag,
-                              cuda::std::span<const int, 1> progressFlag) {
+__global__ void k6b_mark_done(cuda::std::span<std::int32_t, 1> doneFlag,
+                              cuda::std::span<const std::int32_t, 1> progressFlag) {
   if (threadIdx.x == 0 && blockIdx.x == 0)
     doneFlag[0] = (progressFlag[0] == 0) ? 1 : 0;
 }
@@ -281,10 +281,10 @@ __global__ void k6b_mark_done(cuda::std::span<int, 1> doneFlag,
 // in, which removes an O(nAnt) factor compared to a per-antenna full scan.
 __global__ void fitToMaxKernelGreedy(
     MdSpan2D<double> re, MdSpan2D<double> im,
-    cuda::std::span<const int> ant1, cuda::std::span<const int> ant2,
+    cuda::std::span<const std::int32_t> ant1, cuda::std::span<const std::int32_t> ant2,
     std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
     cuda::std::span<float> meta, double maxLevel,
-    cuda::std::span<const int> csrRow,
+    cuda::std::span<const std::int32_t> csrRow,
     cuda::std::span<const std::size_t> csrOffset) {
   extern __shared__ double smem[];
   const std::size_t visPerRow = re.extent(1);
@@ -320,7 +320,7 @@ __global__ void fitToMaxKernelGreedy(
   __syncthreads();
 
   for (std::size_t pol = 0; pol != nPol; ++pol) {
-    int progressing = 1;
+    std::int32_t progressing = 1;
     while (progressing) {
       // channel candidates
       for (std::size_t c = tid; c < nChannels; c += nth) {
@@ -396,7 +396,7 @@ __global__ void fitToMaxKernelGreedy(
             bestAntenna = a;
           }
         }
-        int doAntenna, apply, prog;
+        std::int32_t doAntenna, apply, prog;
         double factor;
         std::size_t index;
         if (bestAntennaIncrease > bestChannelIncrease) {
@@ -435,20 +435,20 @@ __global__ void fitToMaxKernelGreedy(
       }
       __syncthreads();
 
-      const int doAntenna = static_cast<int>(sel[0]);
+      const std::int32_t doAntenna = static_cast<std::int32_t>(sel[0]);
       const std::size_t index = static_cast<std::size_t>(sel[1]);
       const double factor = sel[2];
-      progressing = static_cast<int>(sel[3]);
-      const int apply = static_cast<int>(sel[4]);
+      progressing = static_cast<std::int32_t>(sel[3]);
+      const std::int32_t apply = static_cast<std::int32_t>(sel[4]);
       if (apply) {
         if (doAntenna) {
           for (std::size_t row = tid; row < nRows; row += nth) {
             const std::size_t a1 = static_cast<std::size_t>(ant1[row]);
             const std::size_t a2 = static_cast<std::size_t>(ant2[row]);
-            unsigned count = 0;
+            std::uint32_t count = 0;
             if (a1 == index) ++count;
             if (a2 == index) ++count;
-            for (unsigned repeat = 0; repeat != count; ++repeat)
+            for (std::uint32_t repeat = 0; repeat != count; ++repeat)
               for (std::size_t ch = 0; ch != nChannels; ++ch) {
                 const std::size_t vi = ch * nPol + pol;
                 re(row, vi) *= factor;
@@ -476,12 +476,12 @@ __global__ void fitToMaxKernelGreedy(
 /// device (occupancy API), capped by the amount of work.  This keeps the
 /// shared-memory reduction grid resident and avoids over-subscription.
 template <class Kernel>
-unsigned residentGrid(Kernel kernel, std::size_t n, unsigned threads,
-                      std::size_t sharedBytes) {
+std::uint32_t residentGrid(Kernel kernel, std::size_t n,
+                           std::uint32_t threads, std::size_t sharedBytes) {
   const std::size_t needed = (n + threads - 1) / threads;
-  int device = 0;
-  int smCount = 0;
-  int blocksPerSm = 0;
+  std::int32_t device = 0;
+  std::int32_t smCount = 0;
+  std::int32_t blocksPerSm = 0;
   if (cudaGetDevice(&device) == cudaSuccess &&
       cudaDeviceGetAttribute(&smCount, cudaDevAttrMultiProcessorCount,
                              device) == cudaSuccess &&
@@ -493,7 +493,7 @@ unsigned residentGrid(Kernel kernel, std::size_t n, unsigned threads,
                                  static_cast<std::size_t>(blocksPerSm);
     const std::size_t blocks = needed == 0 ? 1 : needed;
     const std::size_t capped = blocks < capacity ? blocks : capacity;
-    return static_cast<unsigned>(
+    return static_cast<std::uint32_t>(
         capped < kMaxGridBlocks ? capped : kMaxGridBlocks);
   }
   return gridFor(n, threads);
@@ -501,12 +501,12 @@ unsigned residentGrid(Kernel kernel, std::size_t n, unsigned threads,
 
 /// Number of damped simultaneous rounds.  The early-exit flag usually stops
 /// after 2–4; the remaining launches are no-ops.
-constexpr unsigned kRounds = 5;
+constexpr std::uint32_t kRounds = 5;
 
 /// Damped simultaneous ("Jacobi") fit-to-max.  See the file header.
 void launchJacobi(MdSpan2D<double> re, MdSpan2D<double> im,
-                  cuda::std::span<const int> ant1,
-                  cuda::std::span<const int> ant2, std::size_t nChannels,
+                  cuda::std::span<const std::int32_t> ant1,
+                  cuda::std::span<const std::int32_t> ant2, std::size_t nChannels,
                   std::size_t nPol, std::size_t nAnt,
                   cuda::std::span<float> meta, double maxLevel,
                   dysco_stream_t stream) {
@@ -517,29 +517,29 @@ void launchJacobi(MdSpan2D<double> re, MdSpan2D<double> im,
 
   // Managed workspace: [L, M, progressFlag, doneFlag], owned as RAII.
   const std::size_t bytes =
-      (lCount + mCount) * sizeof(double) + 2 * sizeof(int);
+      (lCount + mCount) * sizeof(double) + 2 * sizeof(std::int32_t);
   void *raw = nullptr;
   DYSCO_MANAGED_ALLOC(&raw, bytes);
   const std::unique_ptr<void, dysco_gpu::ManagedDeleter> workspace(raw);
-  unsigned char *cursor = static_cast<unsigned char *>(raw);
+  std::uint8_t *cursor = static_cast<std::uint8_t *>(raw);
   double *L = reinterpret_cast<double *>(cursor);
   cursor += lCount * sizeof(double);
   double *M = reinterpret_cast<double *>(cursor);
   cursor += mCount * sizeof(double);
-  int *progressFlag = reinterpret_cast<int *>(cursor);
-  cursor += sizeof(int);
-  int *doneFlag = reinterpret_cast<int *>(cursor);
+  std::int32_t *progressFlag = reinterpret_cast<std::int32_t *>(cursor);
+  cursor += sizeof(std::int32_t);
+  std::int32_t *doneFlag = reinterpret_cast<std::int32_t *>(cursor);
 
   cuda::std::span<double> lView(L, lCount);
   cuda::std::span<double> mView(M, mCount);
-  cuda::std::span<int, 1> progressView(progressFlag, 1);
-  cuda::std::span<int, 1> doneView(doneFlag, 1);
+  cuda::std::span<std::int32_t, 1> progressView(progressFlag, 1);
+  cuda::std::span<std::int32_t, 1> doneView(doneFlag, 1);
 
   const std::size_t reduceSmem =
       (lCount + mCount) * sizeof(cuda::std::uint64_t);
   const std::size_t phaseASmem = lCount * sizeof(cuda::std::uint64_t);
-  const unsigned applyGrid = gridFor(n, kK6Block);
-  const unsigned reduceGrid =
+  const std::uint32_t applyGrid = gridFor(n, kK6Block);
+  const std::uint32_t reduceGrid =
       residentGrid(k6b_reduce, n, kK6Block, reduceSmem);
 
   // ---- Phase A: exact per-channel normalization ----
@@ -550,11 +550,13 @@ void launchJacobi(MdSpan2D<double> re, MdSpan2D<double> im,
                                                             meta, maxLevel);
 
   // ---- Phase B: damped simultaneous rounds ----
-  DYSCO_GPU_CHECK(cudaMemsetAsync(doneFlag, 0, sizeof(int), stream));
-  for (unsigned round = 0; round != kRounds; ++round) {
+  DYSCO_GPU_CHECK(
+      cudaMemsetAsync(doneFlag, 0, sizeof(std::int32_t), stream));
+  for (std::uint32_t round = 0; round != kRounds; ++round) {
     DYSCO_GPU_CHECK(cudaMemsetAsync(L, 0, lCount * sizeof(double), stream));
     DYSCO_GPU_CHECK(cudaMemsetAsync(M, 0, mCount * sizeof(double), stream));
-    DYSCO_GPU_CHECK(cudaMemsetAsync(progressFlag, 0, sizeof(int), stream));
+    DYSCO_GPU_CHECK(
+        cudaMemsetAsync(progressFlag, 0, sizeof(std::int32_t), stream));
 
     k6b_reduce<<<reduceGrid, kK6Block, reduceSmem, stream>>>(
         re, im, ant1, ant2, nPol, nAnt, lView, mView, doneView);
@@ -570,8 +572,8 @@ void launchJacobi(MdSpan2D<double> re, MdSpan2D<double> im,
 
 /// Legacy greedy fit-to-max (bit-identical to the CPU encoder).
 void launchGreedy(MdSpan2D<double> re, MdSpan2D<double> im,
-                  cuda::std::span<const int> ant1,
-                  cuda::std::span<const int> ant2, std::size_t nChannels,
+                  cuda::std::span<const std::int32_t> ant1,
+                  cuda::std::span<const std::int32_t> ant2, std::size_t nChannels,
                   std::size_t nPol, std::size_t nAnt,
                   cuda::std::span<float> meta, double maxLevel,
                   dysco_stream_t stream) {
@@ -589,19 +591,21 @@ void launchGreedy(MdSpan2D<double> re, MdSpan2D<double> im,
   }
   for (std::size_t a = 0; a != nAnt; ++a) offset[a + 1] += offset[a];
   const std::size_t total = offset[nAnt];
-  std::vector<int> csrRow(total != 0 ? total : 1);
+  std::vector<std::int32_t> csrRow(total != 0 ? total : 1);
   std::vector<std::size_t> cursor(offset.begin(), offset.end() - 1);
   for (std::size_t row = 0; row != nRows; ++row) {
-    const int a1 = ant1[row];
-    const int a2 = ant2[row];
+    const std::int32_t a1 = ant1[row];
+    const std::int32_t a2 = ant2[row];
     if (a1 == a2) continue;
-    csrRow[cursor[static_cast<std::size_t>(a1)]++] = static_cast<int>(row);
-    csrRow[cursor[static_cast<std::size_t>(a2)]++] = static_cast<int>(row);
+    csrRow[cursor[static_cast<std::size_t>(a1)]++] =
+        static_cast<std::int32_t>(row);
+    csrRow[cursor[static_cast<std::size_t>(a2)]++] =
+        static_cast<std::int32_t>(row);
   }
 
-  int *dCsrRow = nullptr;
+  std::int32_t *dCsrRow = nullptr;
   std::size_t *dCsrOffset = nullptr;
-  DYSCO_MANAGED_ALLOC(&dCsrRow, (total != 0 ? total : 1) * sizeof(int));
+  DYSCO_MANAGED_ALLOC(&dCsrRow, (total != 0 ? total : 1) * sizeof(std::int32_t));
   DYSCO_MANAGED_ALLOC(&dCsrOffset, (nAnt + 1) * sizeof(std::size_t));
   std::copy(csrRow.begin(), csrRow.end(), dCsrRow);
   std::copy(offset.begin(), offset.end(), dCsrOffset);
@@ -609,13 +613,13 @@ void launchGreedy(MdSpan2D<double> re, MdSpan2D<double> im,
   const std::size_t smemDoubles =
       visPerRow + 2 * nChannels + 2 * nAnt + 5;  // + sel[5]
   const std::size_t smemBytes = smemDoubles * sizeof(double);
-  const unsigned kThreads = kK6Block;
+  const std::uint32_t kThreads = kK6Block;
   cudaFuncSetAttribute(fitToMaxKernelGreedy,
                        cudaFuncAttributeMaxDynamicSharedMemorySize,
-                       static_cast<int>(smemBytes));
+                       static_cast<std::int32_t>(smemBytes));
   fitToMaxKernelGreedy<<<1, kThreads, smemBytes, stream>>>(
       re, im, ant1, ant2, nChannels, nPol, nAnt, meta, maxLevel,
-      cuda::std::span<const int>(dCsrRow, total != 0 ? total : 1),
+      cuda::std::span<const std::int32_t>(dCsrRow, total != 0 ? total : 1),
       cuda::std::span<const std::size_t>(dCsrOffset, nAnt + 1));
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   DYSCO_FREE(dCsrRow);
@@ -629,8 +633,8 @@ void launchGreedy(MdSpan2D<double> re, MdSpan2D<double> im,
 // ---------------------------------------------------------------------------
 
 void k6_fit_to_max(MdSpan2D<double> re, MdSpan2D<double> im,
-                   cuda::std::span<const int> ant1,
-                   cuda::std::span<const int> ant2, std::size_t nChannels,
+                   cuda::std::span<const std::int32_t> ant1,
+                   cuda::std::span<const std::int32_t> ant2, std::size_t nChannels,
                    std::size_t nPol, std::size_t nAnt,
                    cuda::std::span<float> meta, double maxLevel,
                    dysco_stream_t stream) {

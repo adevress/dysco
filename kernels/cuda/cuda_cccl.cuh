@@ -96,8 +96,9 @@ DYSCO_HD DYSCO_INLINE void atomicMaxNonNegative(double *address,
 }
 
 /// Device-scoped atomic OR, used for the K6 progress / early-exit flags.
-DYSCO_HD DYSCO_INLINE void atomicOrDevice(int *address, int value) noexcept {
-  cuda::atomic_ref<int, cuda::thread_scope_device> ref(*address);
+DYSCO_HD DYSCO_INLINE void atomicOrDevice(std::int32_t *address,
+                                          std::int32_t value) noexcept {
+  cuda::atomic_ref<std::int32_t, cuda::thread_scope_device> ref(*address);
   ref.fetch_or(value, cuda::memory_order_relaxed);
 }
 

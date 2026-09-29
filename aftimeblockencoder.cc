@@ -2,8 +2,10 @@
 
 #include "kernels/af_reference.h"
 
+#include <cstdint>
 #include <cstring>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -341,19 +343,22 @@ void AFTimeBlockEncoder::EncodeWithCounterRng(
   const std::size_t visPerRow = _nPol * _nChannels;
   const std::size_t nVis = nRows * visPerRow;
   std::vector<float> interleaved(nVis * 2);
-  std::vector<int> ant1(nRows), ant2(nRows);
+  std::vector<std::int32_t> ant1(nRows), ant2(nRows);
   for (std::size_t r = 0; r != nRows; ++r) {
-    ant1[r] = static_cast<int>(rows[r].antenna1);
-    ant2[r] = static_cast<int>(rows[r].antenna2);
+    ant1[r] = static_cast<std::int32_t>(rows[r].antenna1);
+    ant2[r] = static_cast<std::int32_t>(rows[r].antenna2);
     std::memcpy(interleaved.data() + r * visPerRow * 2,
                 rows[r].visibilities.data(), visPerRow * 2 * sizeof(float));
   }
   const std::vector<float> decValues = gausEncoder.DecodeValues();
   const std::size_t metaCount = _nPol * (_nChannels + antennaCount);
+  // Boundary cast: the storage manager symbol buffer is `symbol_t` (an
+  // `unsigned`); the reference codec uses the fixed-width alias.
+  static_assert(std::is_same_v<symbol_t, std::uint32_t>);
   dyscostman::gpu::cpuAfEncode(
       interleaved, ant1, ant2, _nChannels, _nPol, antennaCount, decValues, seed,
       blockIndex, _fitToMaximum, dysco::span<float>(metaBuffer, metaCount),
-      dysco::span<unsigned int>(symbolBuffer, nVis * 2));
+      dysco::span<std::uint32_t>(symbolBuffer, nVis * 2));
 }
 
 template void AFTimeBlockEncoder::encode<true>(

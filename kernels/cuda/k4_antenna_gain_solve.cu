@@ -23,9 +23,9 @@ namespace gpu {
 
 namespace {
 
-constexpr unsigned kAntennaSolveThreads = 1024;
+constexpr std::uint32_t kAntennaSolveThreads = 1024;
 // Solver parameters, mirroring `AFTimeBlockEncoder::calculateAntennaeRMS`.
-constexpr unsigned kMaxIterations = 100;
+constexpr std::uint32_t kMaxIterations = 100;
 constexpr double kPrecisionTarget = 1e-6;
 constexpr double kDampingNew = 0.8;      ///< weight of the new estimate
 constexpr double kDampingOld = 1.0 - kDampingNew;
@@ -52,7 +52,7 @@ __global__ void antennaGainSolveKernel(MdSpan2D<const double> matrix,
   __syncthreads();
 
   double precision = 1.0;
-  unsigned iteration = 0;
+  std::uint32_t iteration = 0;
   while (iteration < kMaxIterations && precision > kPrecisionTarget) {
     ++iteration;
     if (active) {
@@ -111,7 +111,7 @@ void k4_antenna_gain_solve(MdSpan2D<const double> matrix,
 void k4_store_antenna_gains(cuda::std::span<const double> rmsPerAntenna,
                             cuda::std::span<float> destination,
                             dysco_stream_t stream) {
-  constexpr unsigned kThreads = kThreadBlockSize;
+  constexpr std::uint32_t kThreads = kThreadBlockSize;
   const std::size_t nAnt = rmsPerAntenna.size();
   const auto blocks = gridFor(nAnt, kThreads);
   DYSCO_LAUNCH_1D(storeGainsKernel, blocks, kThreads, stream, rmsPerAntenna,

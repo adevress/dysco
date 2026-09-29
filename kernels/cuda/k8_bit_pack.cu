@@ -13,36 +13,37 @@ namespace gpu {
 
 namespace {
 
-__global__ void pack8Kernel(cuda::std::span<const unsigned int> symbols,
-                            cuda::std::span<unsigned char> packed) {
+__global__ void pack8Kernel(cuda::std::span<const std::uint32_t> symbols,
+                            cuda::std::span<std::uint8_t> packed) {
   const std::size_t i = threadFlattenedId();
   if (i >= symbols.size()) return;
-  packed[i] = static_cast<unsigned char>(symbols[i]);
+  packed[i] = static_cast<std::uint8_t>(symbols[i]);
 }
 
-__global__ void packGenericKernel(cuda::std::span<const unsigned int> symbols,
-                                  unsigned bits,
-                                  cuda::std::span<unsigned char> packed) {
+__global__ void packGenericKernel(cuda::std::span<const std::uint32_t> symbols,
+                                  std::uint32_t bits,
+                                  cuda::std::span<std::uint8_t> packed) {
   const std::size_t b = threadFlattenedId();
   if (b >= packed.size()) return;
   const std::size_t symbolCount = symbols.size();
-  unsigned out = 0;
-  for (unsigned k = 0; k != 8; ++k) {
+  std::uint32_t out = 0;
+  for (std::uint32_t k = 0; k != 8; ++k) {
     const std::size_t bit = b * 8 + k;
     const std::size_t symIdx = bit / bits;
     if (symIdx < symbolCount) {
-      const unsigned bitInSym = static_cast<unsigned>(bit % bits);
+      const std::uint32_t bitInSym = static_cast<std::uint32_t>(bit % bits);
       out |= ((symbols[symIdx] >> bitInSym) & 1u) << k;
     }
   }
-  packed[b] = static_cast<unsigned char>(out);
+  packed[b] = static_cast<std::uint8_t>(out);
 }
 
 }  // namespace
 
-void k8_bit_pack(cuda::std::span<const unsigned int> symbols, unsigned bits,
-                 cuda::std::span<unsigned char> packed, dysco_stream_t stream) {
-  constexpr unsigned kThreads = kThreadBlockSize;
+void k8_bit_pack(cuda::std::span<const std::uint32_t> symbols,
+                 std::uint32_t bits, cuda::std::span<std::uint8_t> packed,
+                 dysco_stream_t stream) {
+  constexpr std::uint32_t kThreads = kThreadBlockSize;
   if (bits == 8) {
     const auto blocks = gridFor(symbols.size(), kThreads);
     DYSCO_LAUNCH_1D(pack8Kernel, blocks, kThreads, stream, symbols, packed);

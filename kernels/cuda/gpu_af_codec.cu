@@ -21,7 +21,7 @@
 namespace dyscostman::gpu {
 
 bool available() {
-  int count = 0;
+  std::int32_t count = 0;
   const cudaError_t error = cudaGetDeviceCount(&count);
   if (error != cudaSuccess)
     std::fprintf(stderr, "[dysco-gpu] cudaGetDeviceCount: %s\n",
@@ -33,7 +33,7 @@ std::string_view deviceName() { return dysco_gpu::device_name(); }
 
 namespace {
 [[nodiscard]] constexpr std::size_t packedByteCountFor(
-    std::size_t symbolCount, unsigned bits) noexcept {
+    std::size_t symbolCount, std::uint32_t bits) noexcept {
   return (symbolCount * bits + 7) / 8;
 }
 
@@ -66,23 +66,23 @@ struct AfCodec::Impl {
   const std::size_t visPerRow;
   const std::size_t nVis;
   const std::size_t decCount;
-  const unsigned bits;
+  const std::uint32_t bits;
   const std::size_t packedBytes;
 
   Managed<float> decValues;
   Managed<float> inInterleaved;  // 2*nVis
   Managed<double> re, im;
-  Managed<int> ant1, ant2;
+  Managed<std::int32_t> ant1, ant2;
   Managed<float> meta;  // visPerRow + nPol*nAnt
   Managed<double> matrix;
   Managed<double> rmsPerAnt;
-  Managed<unsigned int> symbols;
-  Managed<unsigned char> packed;
+  Managed<std::uint32_t> symbols;
+  Managed<std::uint8_t> packed;
   Managed<float> out;
 
   Impl(std::size_t rows, std::size_t channels, std::size_t pol,
        std::size_t antennas, dysco::span<const float> decValuesIn,
-       unsigned bitsPerSymbol)
+       std::uint32_t bitsPerSymbol)
       : nRows(rows),
         nChannels(channels),
         nPol(pol),
@@ -96,13 +96,13 @@ struct AfCodec::Impl {
         inInterleaved(allocate<float>(2 * nVis)),
         re(allocate<double>(nVis)),
         im(allocate<double>(nVis)),
-        ant1(allocate<int>(nRows)),
-        ant2(allocate<int>(nRows)),
+        ant1(allocate<std::int32_t>(nRows)),
+        ant2(allocate<std::int32_t>(nRows)),
         meta(allocate<float>(visPerRow + nPol * nAnt)),
         matrix(allocate<double>(nAnt * nAnt)),
         rmsPerAnt(allocate<double>(nAnt)),
-        symbols(allocate<unsigned int>(2 * nVis)),
-        packed(allocate<unsigned char>(packedBytes)),
+        symbols(allocate<std::uint32_t>(2 * nVis)),
+        packed(allocate<std::uint8_t>(packedBytes)),
         out(allocate<float>(2 * nVis)) {
     std::copy(decValuesIn.begin(), decValuesIn.end(), decValues.get());
   }
@@ -119,8 +119,8 @@ struct AfCodec::Impl {
     return MdSpan2D<double>(im.get(), nRows, visPerRow);
   }
   /// Interleaved (re, im) per visibility, shape [nVis, 2].
-  [[nodiscard]] MdSpan2D<unsigned int> symbolsMatrix() const noexcept {
-    return MdSpan2D<unsigned int>(symbols.get(), nVis, 2);
+  [[nodiscard]] MdSpan2D<std::uint32_t> symbolsMatrix() const noexcept {
+    return MdSpan2D<std::uint32_t>(symbols.get(), nVis, 2);
   }
   [[nodiscard]] MdSpan2D<float> outMatrix() const noexcept {
     return MdSpan2D<float>(out.get(), nVis, 2);
@@ -132,7 +132,7 @@ struct AfCodec::Impl {
 
 AfCodec::AfCodec(std::size_t nRows, std::size_t nChannels, std::size_t nPol,
                  std::size_t nAnt, dysco::span<const float> decValues,
-                 unsigned bitsPerSymbol)
+                 std::uint32_t bitsPerSymbol)
     : _impl(std::make_unique<Impl>(nRows, nChannels, nPol, nAnt, decValues,
                                    bitsPerSymbol)) {}
 
@@ -143,23 +143,24 @@ std::size_t AfCodec::packedByteCount() const noexcept {
 }
 
 void AfCodec::encode(dysco::span<const float> interleavedIn,
-                     dysco::span<const int> ant1, dysco::span<const int> ant2,
+                     dysco::span<const std::int32_t> ant1,
+                     dysco::span<const std::int32_t> ant2,
                      std::uint64_t seed, std::uint64_t blockIndex,
                      bool fitToMaximum, dysco::span<float> metaOut,
-                     dysco::span<unsigned char> packedOut) {
+                     dysco::span<std::uint8_t> packedOut) {
   Impl &s = *_impl;
   const dysco_stream_t stream = DYSCO_DEFAULT_STREAM;
   const cuda::std::span<float> metaView(s.meta.get(),
                                         s.visPerRow + s.nPol * s.nAnt);
-  const cuda::std::span<const int> ant1View(s.ant1.get(), s.nRows);
-  const cuda::std::span<const int> ant2View(s.ant2.get(), s.nRows);
+  const cuda::std::span<const std::int32_t> ant1View(s.ant1.get(), s.nRows);
+  const cuda::std::span<const std::int32_t> ant2View(s.ant2.get(), s.nRows);
 
   // Upload the block (transparent page migration: a plain CPU write to the
   // managed buffer is enough; pages move on first device access).
   std::memcpy(s.inInterleaved.get(), interleavedIn.data(),
               2 * s.nVis * sizeof(float));
-  std::memcpy(s.ant1.get(), ant1.data(), s.nRows * sizeof(int));
-  std::memcpy(s.ant2.get(), ant2.data(), s.nRows * sizeof(int));
+  std::memcpy(s.ant1.get(), ant1.data(), s.nRows * sizeof(std::int32_t));
+  std::memcpy(s.ant2.get(), ant2.data(), s.nRows * sizeof(std::int32_t));
 
   k1_gather_convert(s.inInterleavedMatrix(),
                     cuda::std::span<double>(s.re.get(), s.nVis),
@@ -207,12 +208,12 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
   k7_quantize_dither(re, im,
                      cuda::std::span<const float>(s.decValues.get(), s.decCount),
       static_cast<std::uint32_t>(seed), static_cast<std::uint32_t>(seed >> 32),
-      blockIndex, cuda::std::span<unsigned int>(s.symbols.get(), 2 * s.nVis),
+      blockIndex, cuda::std::span<std::uint32_t>(s.symbols.get(), 2 * s.nVis),
       stream);
-  k8_bit_pack(cuda::std::span<const unsigned int>(s.symbols.get(), 2 * s.nVis),
-              s.bits, cuda::std::span<unsigned char>(s.packed.get(),
-                                                     s.packedBytes),
-              stream);
+  k8_bit_pack(
+      cuda::std::span<const std::uint32_t>(s.symbols.get(), 2 * s.nVis),
+      s.bits, cuda::std::span<std::uint8_t>(s.packed.get(), s.packedBytes),
+      stream);
 
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(metaOut.data(), s.meta.get(),
@@ -220,9 +221,10 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
   std::memcpy(packedOut.data(), s.packed.get(), s.packedBytes);
 }
 
-void AfCodec::decode(dysco::span<const unsigned char> packedIn,
-                     dysco::span<const float> metaIn, dysco::span<const int> ant1,
-                     dysco::span<const int> ant2,
+void AfCodec::decode(dysco::span<const std::uint8_t> packedIn,
+                     dysco::span<const float> metaIn,
+                     dysco::span<const std::int32_t> ant1,
+                     dysco::span<const std::int32_t> ant2,
                      dysco::span<float> interleavedOut) {
   Impl &s = *_impl;
   const dysco_stream_t stream = DYSCO_DEFAULT_STREAM;
@@ -232,18 +234,18 @@ void AfCodec::decode(dysco::span<const unsigned char> packedIn,
   std::memcpy(s.packed.get(), packedIn.data(), packedIn.size());
   std::memcpy(s.meta.get(), metaIn.data(),
               (s.visPerRow + s.nPol * s.nAnt) * sizeof(float));
-  std::memcpy(s.ant1.get(), ant1.data(), s.nRows * sizeof(int));
-  std::memcpy(s.ant2.get(), ant2.data(), s.nRows * sizeof(int));
+  std::memcpy(s.ant1.get(), ant1.data(), s.nRows * sizeof(std::int32_t));
+  std::memcpy(s.ant2.get(), ant2.data(), s.nRows * sizeof(std::int32_t));
 
-  d1_bit_unpack(cuda::std::span<const unsigned char>(s.packed.get(),
-                                                     packedIn.size()),
+  d1_bit_unpack(cuda::std::span<const std::uint8_t>(s.packed.get(),
+                                                    packedIn.size()),
                 s.bits,
-                cuda::std::span<unsigned int>(s.symbols.get(), 2 * s.nVis),
+                cuda::std::span<std::uint32_t>(s.symbols.get(), 2 * s.nVis),
                 stream);
   d2_dequantize(s.symbolsMatrix(),
                 cuda::std::span<const float>(s.meta.get(), s.visPerRow + s.nPol * s.nAnt),
-                cuda::std::span<const int>(s.ant1.get(), s.nRows),
-                cuda::std::span<const int>(s.ant2.get(), s.nRows), s.nRows, s.nChannels,
+                cuda::std::span<const std::int32_t>(s.ant1.get(), s.nRows),
+                cuda::std::span<const std::int32_t>(s.ant2.get(), s.nRows), s.nRows, s.nChannels,
                 s.nPol, s.nAnt,
                 cuda::std::span<const float>(s.decValues.get(), s.decCount),
                 s.outMatrix(), stream);
@@ -253,13 +255,13 @@ void AfCodec::decode(dysco::span<const unsigned char> packedIn,
 
 void quantize(dysco::span<const float> values,
               dysco::span<const float> decValues, std::uint64_t seed,
-              std::uint64_t blockIndex, dysco::span<unsigned int> symbols) {
+              std::uint64_t blockIndex, dysco::span<std::uint32_t> symbols) {
   const std::size_t count = values.size();
   if (symbols.size() < count)
     throw std::runtime_error("Dysco GPU quantize: symbol buffer too small");
   auto dValues = allocateManaged<float>(count);
   auto dDecValues = allocateManaged<float>(decValues.size());
-  auto dSymbols = allocateManaged<unsigned int>(count);
+  auto dSymbols = allocateManaged<std::uint32_t>(count);
   std::memcpy(dValues.get(), values.data(), count * sizeof(float));
   std::memcpy(dDecValues.get(), decValues.data(),
               decValues.size() * sizeof(float));
@@ -268,38 +270,39 @@ void quantize(dysco::span<const float> values,
                                                 decValues.size()),
                    static_cast<std::uint32_t>(seed),
                    static_cast<std::uint32_t>(seed >> 32), blockIndex,
-                   cuda::std::span<unsigned int>(dSymbols.get(), count),
+                   cuda::std::span<std::uint32_t>(dSymbols.get(), count),
                    DYSCO_DEFAULT_STREAM);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
-  std::memcpy(symbols.data(), dSymbols.get(), count * sizeof(unsigned int));
+  std::memcpy(symbols.data(), dSymbols.get(),
+              count * sizeof(std::uint32_t));
 }
 
-void pack(dysco::span<const unsigned int> symbols, unsigned bits,
-          dysco::span<unsigned char> packed) {
-  auto dSymbols = allocateManaged<unsigned int>(symbols.size());
-  auto dPacked = allocateManaged<unsigned char>(packed.size());
+void pack(dysco::span<const std::uint32_t> symbols, std::uint32_t bits,
+          dysco::span<std::uint8_t> packed) {
+  auto dSymbols = allocateManaged<std::uint32_t>(symbols.size());
+  auto dPacked = allocateManaged<std::uint8_t>(packed.size());
   std::memcpy(dSymbols.get(), symbols.data(),
-              symbols.size() * sizeof(unsigned int));
+              symbols.size() * sizeof(std::uint32_t));
   k8_bit_pack(
-      cuda::std::span<const unsigned int>(dSymbols.get(), symbols.size()), bits,
-      cuda::std::span<unsigned char>(dPacked.get(), packed.size()),
+      cuda::std::span<const std::uint32_t>(dSymbols.get(), symbols.size()), bits,
+      cuda::std::span<std::uint8_t>(dPacked.get(), packed.size()),
       DYSCO_DEFAULT_STREAM);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(packed.data(), dPacked.get(), packed.size());
 }
 
-void unpack(dysco::span<const unsigned char> packed, unsigned bits,
-            dysco::span<unsigned int> symbols) {
-  auto dPacked = allocateManaged<unsigned char>(packed.size());
-  auto dSymbols = allocateManaged<unsigned int>(symbols.size());
+void unpack(dysco::span<const std::uint8_t> packed, std::uint32_t bits,
+            dysco::span<std::uint32_t> symbols) {
+  auto dPacked = allocateManaged<std::uint8_t>(packed.size());
+  auto dSymbols = allocateManaged<std::uint32_t>(symbols.size());
   std::memcpy(dPacked.get(), packed.data(), packed.size());
   d1_bit_unpack(
-      cuda::std::span<const unsigned char>(dPacked.get(), packed.size()), bits,
-      cuda::std::span<unsigned int>(dSymbols.get(), symbols.size()),
+      cuda::std::span<const std::uint8_t>(dPacked.get(), packed.size()), bits,
+      cuda::std::span<std::uint32_t>(dSymbols.get(), symbols.size()),
       DYSCO_DEFAULT_STREAM);
   DYSCO_GPU_CHECK(cudaDeviceSynchronize());
   std::memcpy(symbols.data(), dSymbols.get(),
-              symbols.size() * sizeof(unsigned int));
+              symbols.size() * sizeof(std::uint32_t));
 }
 
 }  // namespace dyscostman::gpu

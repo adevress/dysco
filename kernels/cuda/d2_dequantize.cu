@@ -16,30 +16,30 @@ namespace gpu {
 
 namespace {
 
-__global__ void dequantizeKernel(MdSpan2D<const unsigned int> symbols,
+__global__ void dequantizeKernel(MdSpan2D<const std::uint32_t> symbols,
                                  cuda::std::span<const float> meta,
-                                 cuda::std::span<const int> ant1,
-                                 cuda::std::span<const int> ant2,
-                                 std::size_t visPerRow, unsigned nPol,
+                                 cuda::std::span<const std::int32_t> ant1,
+                                 cuda::std::span<const std::int32_t> ant2,
+                                 std::size_t visPerRow, std::uint32_t nPol,
                                  std::size_t nAnt,
                                  cuda::std::span<const float> decValues,
                                  MdSpan2D<float> interleaved) {
-  const unsigned decCount = static_cast<unsigned>(decValues.size());
+  const std::uint32_t decCount = static_cast<std::uint32_t>(decValues.size());
   const double nanValue = maxKeyToDouble(kQuietNaNBits);
   const std::size_t row = blockIdx.x;
-  const unsigned rem =
-      static_cast<unsigned>(blockIdx.y) * blockDim.x + threadIdx.x;
+  const std::uint32_t rem =
+      static_cast<std::uint32_t>(blockIdx.y) * blockDim.x + threadIdx.x;
   if (rem >= visPerRow) return;
-  const unsigned ch = rem / nPol;
-  const unsigned pol = rem % nPol;
+  const std::uint32_t ch = rem / nPol;
+  const std::uint32_t pol = rem % nPol;
   const std::size_t i = row * visPerRow + rem;
   const double chRms = static_cast<double>(meta[ch * nPol + pol]);
   const double antFac =
       static_cast<double>(meta[visPerRow + pol * nAnt + ant1[row]]) *
       static_cast<double>(meta[visPerRow + pol * nAnt + ant2[row]]);
   const double factor = chRms * antFac;
-  const unsigned int sRe = symbols(i, 0);
-  const unsigned int sIm = symbols(i, 1);
+  const std::uint32_t sRe = symbols(i, 0);
+  const std::uint32_t sIm = symbols(i, 1);
   const double vRe =
       (sRe < decCount) ? static_cast<double>(decValues[sRe]) : nanValue;
   const double vIm =
@@ -50,19 +50,19 @@ __global__ void dequantizeKernel(MdSpan2D<const unsigned int> symbols,
 
 }  // namespace
 
-void d2_dequantize(MdSpan2D<const unsigned int> symbols,
+void d2_dequantize(MdSpan2D<const std::uint32_t> symbols,
                    cuda::std::span<const float> meta,
-                   cuda::std::span<const int> ant1,
-                   cuda::std::span<const int> ant2, std::size_t nRows,
+                   cuda::std::span<const std::int32_t> ant1,
+                   cuda::std::span<const std::int32_t> ant2, std::size_t nRows,
                    std::size_t nChannels, std::size_t nPol, std::size_t nAnt,
                    cuda::std::span<const float> decValues,
                    MdSpan2D<float> interleaved, dysco_stream_t stream) {
   const std::size_t visPerRow = nChannels * nPol;
-  constexpr unsigned kThreads = kThreadBlockSize;
-  const dim3 grid(static_cast<unsigned>(nRows),
+  constexpr std::uint32_t kThreads = kThreadBlockSize;
+  const dim3 grid(static_cast<std::uint32_t>(nRows),
                   gridFor(visPerRow, kThreads));
   DYSCO_LAUNCH_1D(dequantizeKernel, grid, kThreads, stream, symbols, meta, ant1,
-                  ant2, visPerRow, static_cast<unsigned>(nPol), nAnt,
+                  ant2, visPerRow, static_cast<std::uint32_t>(nPol), nAnt,
                   decValues, interleaved);
 }
 

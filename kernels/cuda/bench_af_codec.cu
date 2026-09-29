@@ -50,7 +50,7 @@ struct BlockData {
   std::size_t nChannels = 0;
   std::size_t nPol = 0;
   std::size_t nRows = 0;
-  std::vector<int> ant1, ant2;
+  std::vector<std::int32_t> ant1, ant2;
   std::vector<float> input;  // 2 * nRows * nChannels * nPol, re/im interleaved
   std::string source;
 };
@@ -70,8 +70,8 @@ BlockData makeSyntheticBlock() {
   std::size_t r = 0;
   for (std::size_t a = 0; a != block.nAnt; ++a)
     for (std::size_t b = a; b != block.nAnt; ++b) {
-      block.ant1[r] = static_cast<int>(a);
-      block.ant2[r] = static_cast<int>(b);
+      block.ant1[r] = static_cast<std::int32_t>(a);
+      block.ant2[r] = static_cast<std::int32_t>(b);
       ++r;
     }
 
@@ -187,10 +187,10 @@ int main(int argc, char **argv) {
   for (std::size_t i = 0; i != decCount; ++i)
     decValues[i] = static_cast<float>(-2.5 + 5.0 * (i + 0.5) / decCount);
 
-  const uint64_t seed = 0x1122334455667788ull;
+  const std::uint64_t seed = 0x1122334455667788ull;
   const std::size_t metaCount = visPerRow + nPol * nAnt;
   std::vector<float> metaCpu(metaCount), metaGpu(metaCount);
-  std::vector<unsigned int> symCpu(2 * nVis), symGpu(2 * nVis);
+  std::vector<std::uint32_t> symCpu(2 * nVis), symGpu(2 * nVis);
 
   // Production CPU path (Mersenne Twister dither) needs the time-block buffer
   // and the dictionary encoder.
@@ -200,11 +200,11 @@ int main(int argc, char **argv) {
   AFTimeBlockEncoder encoderMtNoFit(nPol, nChannels, /*fitToMaximum=*/false);
   AFTimeBlockEncoder encoderMtFit(nPol, nChannels, /*fitToMaximum=*/true);
   std::vector<float> metaMt(metaCount);
-  std::vector<unsigned int> symMt(2 * nVis);
+  std::vector<std::uint32_t> symMt(2 * nVis);
   std::mt19937 mtRng(1234);
 
   AfCodec codec(nRows, nChannels, nPol, nAnt, decValues, bits);
-  std::vector<unsigned char> packedGpu(codec.packedByteCount());
+  std::vector<std::uint8_t> packedGpu(codec.packedByteCount());
   std::vector<float> outCpu(2 * nVis), outGpu(2 * nVis);
 
   // ---- warmup ----

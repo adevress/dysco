@@ -63,7 +63,7 @@ DYSCO_HD DYSCO_INLINE void philox4x32round(std::uint32_t &c0,
 DYSCO_HD DYSCO_INLINE void philox4x32_10(std::uint32_t &c0, std::uint32_t &c1,
                                          std::uint32_t &c2, std::uint32_t &c3,
                                          std::uint32_t k0, std::uint32_t k1) {
-  for (int round = 0; round != 10; ++round) {
+  for (std::int32_t round = 0; round != 10; ++round) {
     philox4x32round(c0, c1, c2, c3, k0, k1);
     if (round != 9) {
       k0 += kPhiloxWeyl0;

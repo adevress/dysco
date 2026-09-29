@@ -40,7 +40,7 @@ __global__ void channelRmsKernel(MdSpan2D<const double> re,
 
 void k2_channel_rms(MdSpan2D<const double> re, MdSpan2D<const double> im,
                     cuda::std::span<float> channelRms, dysco_stream_t stream) {
-  constexpr unsigned kThreads = kThreadBlockSize;
+  constexpr std::uint32_t kThreads = kThreadBlockSize;
   const std::size_t visPerRow = re.extent(1);
   const auto blocks = gridFor(visPerRow, kThreads);
   DYSCO_LAUNCH_1D(channelRmsKernel, blocks, kThreads, stream, re, im,

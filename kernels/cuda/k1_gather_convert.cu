@@ -31,7 +31,7 @@ void k1_gather_convert(MdSpan2D<const float> interleaved,
                        cuda::std::span<double> re, cuda::std::span<double> im,
                        dysco_stream_t stream) {
   const std::size_t nVis = interleaved.extent(0);
-  constexpr unsigned kThreads = kThreadBlockSize;
+  constexpr std::uint32_t kThreads = kThreadBlockSize;
   const auto blocks = gridFor(nVis, kThreads);
   DYSCO_LAUNCH_1D(gatherConvertKernel, blocks, kThreads, stream, interleaved,
                   re, im);
