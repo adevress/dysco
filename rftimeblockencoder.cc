@@ -64,7 +64,6 @@ void RFTimeBlockEncoder::maximizeChannels(std::vector<DBufferRow> &data, float *
   }
 }
 
-template <bool UseDithering>
 void RFTimeBlockEncoder::encode(
     const dyscostman::StochasticEncoder<float> &gausEncoder,
     const TimeBlockEncoder::FBuffer &buffer, float *metaBuffer,
@@ -72,8 +71,6 @@ void RFTimeBlockEncoder::encode(
     uint64_t seed, uint64_t blockIndex) {
   const auto seedLo = static_cast<std::uint32_t>(seed);
   const auto seedHi = static_cast<std::uint32_t>(seed >> 32);
-  (void)seedLo;
-  (void)seedHi;
   // Note that encoding is performed with doubles
   std::vector<DBufferRow> data;
   buffer.ConvertVector<std::complex<double>>(data);
@@ -92,37 +89,20 @@ void RFTimeBlockEncoder::encode(
   std::uint64_t visibilityIndex = 0;
   for (const DBufferRow &row : data) {
     for (size_t i = 0; i != visPerRow; ++i, ++visibilityIndex) {
-      if (UseDithering) {
-        symbolBufferPtr[i * 2] = gausEncoder.EncodeWithDithering(
-            row.visibilities[i].real(),
-            dyscostman::random123::ditherForVisibility(seedLo, seedHi,
-                                                       blockIndex,
-                                                       visibilityIndex, 0));
-        symbolBufferPtr[i * 2 + 1] = gausEncoder.EncodeWithDithering(
-            row.visibilities[i].imag(),
-            dyscostman::random123::ditherForVisibility(seedLo, seedHi,
-                                                       blockIndex,
-                                                       visibilityIndex, 1));
-      } else {
-        symbolBufferPtr[i * 2] = gausEncoder.Encode(row.visibilities[i].real());
-        symbolBufferPtr[i * 2 + 1] =
-            gausEncoder.Encode(row.visibilities[i].imag());
-      }
+      symbolBufferPtr[i * 2] = gausEncoder.EncodeWithDithering(
+          row.visibilities[i].real(),
+          dyscostman::random123::ditherForVisibility(seedLo, seedHi,
+                                                     blockIndex,
+                                                     visibilityIndex, 0));
+      symbolBufferPtr[i * 2 + 1] = gausEncoder.EncodeWithDithering(
+          row.visibilities[i].imag(),
+          dyscostman::random123::ditherForVisibility(seedLo, seedHi,
+                                                     blockIndex,
+                                                     visibilityIndex, 1));
     }
     symbolBufferPtr += visPerRow * 2;
   }
 }
-
-template void RFTimeBlockEncoder::encode<true>(
-    const dyscostman::StochasticEncoder<float> &gausEncoder,
-    const TimeBlockEncoder::FBuffer &buffer, float *metaBuffer,
-    TimeBlockEncoder::symbol_t *symbolBuffer, size_t, uint64_t seed,
-    uint64_t blockIndex);
-template void RFTimeBlockEncoder::encode<false>(
-    const dyscostman::StochasticEncoder<float> &gausEncoder,
-    const TimeBlockEncoder::FBuffer &buffer, float *metaBuffer,
-    TimeBlockEncoder::symbol_t *symbolBuffer, size_t, uint64_t seed,
-    uint64_t blockIndex);
 
 void RFTimeBlockEncoder::InitializeDecode(const float *metaBuffer, size_t nRow,
                                           size_t /*nAntennae*/) {

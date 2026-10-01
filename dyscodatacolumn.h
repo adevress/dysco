@@ -6,6 +6,8 @@
 #include "stochasticencoder.h"
 #include "timeblockencoder.h"
 
+#include <random>
+
 namespace dyscostman {
 
 class DyscoStMan;
@@ -25,9 +27,7 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
       : ThreadedDyscoColumn(parent, dtype),
         _philoxSeed(std::random_device{}()),
         _gausEncoder(),
-        _distribution(GaussianDistribution),
         _normalization(Normalization::kRF),
-        _studentsTNu(0.0),
         _gpuEnabled(false),
         _fitToMaximum(true) {}
 
@@ -101,9 +101,7 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
   uint64_t _philoxSeed;
   std::unique_ptr<StochasticEncoder<float>> _gausEncoder;
   std::unique_ptr<TimeBlockEncoder> _decoder;
-  DyscoDistribution _distribution;
   Normalization _normalization;
-  double _studentsTNu;
   bool _gpuEnabled;
   bool _fitToMaximum;
 };

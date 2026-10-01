@@ -20,16 +20,8 @@ class RFTimeBlockEncoder : public TimeBlockEncoder {
       const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
       float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
       uint64_t seed, uint64_t blockIndex) final override {
-    encode<true>(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount,
-                 seed, blockIndex);
-  }
-
-  virtual void EncodeWithoutDithering(
-      const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
-      float *metaBuffer, symbol_t *symbolBuffer,
-      size_t antennaCount) final override {
-    encode<false>(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount,
-                  0, 0);
+    encode(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount, seed,
+           blockIndex);
   }
 
   virtual void InitializeDecode(const float *metaBuffer, size_t nRow,
@@ -58,15 +50,6 @@ class RFTimeBlockEncoder : public TimeBlockEncoder {
     return nPol * (nChannels + nRow);
   }
 
-  /**
-   * Performs the RF normalization on the data such that no value is higher than
-   * the @p max_level, while trying to maximize the values as much as possible.
-   *
-   * The size of @p meta_buffer should be at least @ref MetaDataCount().
-   */
-  void Normalize(TimeBlockBuffer<std::complex<float>> &buffer,
-                 size_t antennaCount, double max_level);
-
  private:
   /**
    * Scales the rows in the data such that every row has a value with the
@@ -87,7 +70,6 @@ class RFTimeBlockEncoder : public TimeBlockEncoder {
   void maximizeChannels(std::vector<DBufferRow> &data, float *metaBuffer,
                         double maxLevel) const;
 
-  template <bool UseDithering>
   void encode(const dyscostman::StochasticEncoder<float> &gausEncoder,
               const FBuffer &buffer, float *metaBuffer, symbol_t *symbolBuffer,
               size_t antennaCount, uint64_t seed, uint64_t blockIndex);

@@ -25,12 +25,6 @@ class GpuAFTimeBlockEncoder final : public TimeBlockEncoder {
                         bool fitToMaximum);
   ~GpuAFTimeBlockEncoder() override;
 
-  void EncodeWithoutDithering(const dyscostman::StochasticEncoder<float> &,
-                              FBuffer &, float *, symbol_t *,
-                              size_t) final override {
-    throw std::runtime_error(
-        "GpuAFTimeBlockEncoder does not implement undithered encoding");
-  }
   void EncodeWithCounterRng(const dyscostman::StochasticEncoder<float> &,
                             FBuffer &, float *, symbol_t *, size_t, uint64_t,
                             uint64_t) final override {

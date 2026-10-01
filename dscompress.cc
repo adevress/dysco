@@ -225,9 +225,9 @@ int main(int argc, char *argv[]) {
       break;
   }
   std::cout << "\n"
-               "\trng = Philox (counter-based)\n"
                "\tcuda backend = "
-            << (useGpu ? "\ton" : "off") << "\n"
+            << (useGpu ? "\ton" : "off")
+            << "\n"
                "\tnormalization = ";
   switch (normalization) {
     case Normalization::kAF:

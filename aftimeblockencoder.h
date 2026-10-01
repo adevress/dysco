@@ -16,14 +16,6 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
 
   virtual ~AFTimeBlockEncoder() override;
 
-  virtual void EncodeWithoutDithering(
-      const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
-      float *metaBuffer, symbol_t *symbolBuffer,
-      size_t antennaCount) final override {
-    encodeUndithered(gausEncoder, buffer, metaBuffer, symbolBuffer,
-                     antennaCount);
-  }
-
   /**
    * Bit-compatible counterpart of the GPU encoder: same normalization order
    * as kernels K1..K6 and Philox dither as kernel K7, implemented by the
@@ -61,20 +53,6 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
   }
 
  private:
-  void calculateAntennaeRMS(const std::vector<DBufferRow> &data,
-                            size_t polIndex, size_t antennaCount);
-
-  void encodeUndithered(const dyscostman::StochasticEncoder<float> &gausEncoder,
-                        const FBuffer &buffer, float *metaBuffer,
-                        symbol_t *symbolBuffer, size_t antennaCount);
-
-  void changeAntennaFactor(std::vector<DBufferRow> &data, float *metaBuffer,
-                           size_t antennaIndex, size_t antennaCount,
-                           size_t polIndex, double factor);
-
-  void fitToMaximum(std::vector<DBufferRow> &data, float *metaBuffer,
-                    double max_level, size_t antennaCount);
-
   size_t _nPol, _nChannels;
   bool _fitToMaximum;
 

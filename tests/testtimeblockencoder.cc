@@ -98,8 +98,9 @@ void TestSimpleExample(Normalization blockNormalization) {
   aocommon::UVector<float> metaBuffer(metaDataCount);
   aocommon::UVector<TimeBlockEncoder::symbol_t> symbolBuffer(symbolCount);
 
-  encoder->EncodeWithoutDithering(gausEncoder, buffer, metaBuffer.data(),
-                                  symbolBuffer.data(), nAnt);
+  encoder->EncodeWithCounterRng(gausEncoder, buffer, metaBuffer.data(),
+                                symbolBuffer.data(), nAnt,
+                                0x0123456789ABCDEFull, 0);
   TimeBlockBuffer<std::complex<float>> out =
       Decode(blockNormalization, gausEncoder, nAnt, nChan, nPol, nRow,
              metaBuffer.data(), symbolBuffer.data());

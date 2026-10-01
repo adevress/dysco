@@ -1,7 +1,8 @@
 // K4 — iterative antenna-gain solver.
 //
 // Solves |V_ij| ~= g_i * g_j in a weighted, damped Jacobi fashion, mirroring
-// `AFTimeBlockEncoder::calculateAntennaeRMS`.  The whole solve runs in a
+// the antenna-RMS solve in the CPU reference (kernels/af_reference.cc).  The
+// whole solve runs in a
 // single thread block with one thread per antenna; each thread reproduces the
 // *sequential* inner loop over j so the double-precision accumulation order is
 // identical to the CPU version.
@@ -24,7 +25,8 @@ namespace gpu {
 namespace {
 
 constexpr std::uint32_t kAntennaSolveThreads = 1024;
-// Solver parameters, mirroring `AFTimeBlockEncoder::calculateAntennaeRMS`.
+// Solver parameters, mirroring the CPU reference antenna-RMS solve
+// (kernels/af_reference.cc).
 constexpr std::uint32_t kMaxIterations = 100;
 constexpr double kPrecisionTarget = 1e-6;
 constexpr double kDampingNew = 0.8;      ///< weight of the new estimate

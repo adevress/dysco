@@ -34,7 +34,6 @@ void RowTimeBlockEncoder::Decode(const StochasticEncoder<float> &gausEncoder,
   }
 }
 
-template <bool UseDithering>
 void RowTimeBlockEncoder::encode(const StochasticEncoder<float> &gausEncoder,
                                  const FBuffer &buffer, float *metaBuffer,
                                  symbol_t *symbolBuffer,
@@ -42,8 +41,6 @@ void RowTimeBlockEncoder::encode(const StochasticEncoder<float> &gausEncoder,
                                  uint64_t blockIndex) {
   const auto seedLo = static_cast<std::uint32_t>(seed);
   const auto seedHi = static_cast<std::uint32_t>(seed >> 32);
-  (void)seedLo;
-  (void)seedHi;
   // Note that encoding is performed with doubles
   std::vector<DBufferRow> data;
   buffer.ConvertVector<std::complex<double>>(data);
@@ -68,30 +65,15 @@ void RowTimeBlockEncoder::encode(const StochasticEncoder<float> &gausEncoder,
   std::uint64_t visibilityIndex = 0;
   for (const DBufferRow &row : data) {
     for (size_t i = 0; i != visPerRow; ++i, ++visibilityIndex) {
-      if (UseDithering) {
-        symbolBufferPtr[i * 2] = gausEncoder.EncodeWithDithering(
-            row.visibilities[i].real(),
-            random123::ditherForVisibility(seedLo, seedHi, blockIndex,
-                                           visibilityIndex, 0));
-        symbolBufferPtr[i * 2 + 1] = gausEncoder.EncodeWithDithering(
-            row.visibilities[i].imag(),
-            random123::ditherForVisibility(seedLo, seedHi, blockIndex,
-                                           visibilityIndex, 1));
-      } else {
-        symbolBufferPtr[i * 2] = gausEncoder.Encode(row.visibilities[i].real());
-        symbolBufferPtr[i * 2 + 1] =
-            gausEncoder.Encode(row.visibilities[i].imag());
-      }
+      symbolBufferPtr[i * 2] = gausEncoder.EncodeWithDithering(
+          row.visibilities[i].real(),
+          random123::ditherForVisibility(seedLo, seedHi, blockIndex,
+                                         visibilityIndex, 0));
+      symbolBufferPtr[i * 2 + 1] = gausEncoder.EncodeWithDithering(
+          row.visibilities[i].imag(),
+          random123::ditherForVisibility(seedLo, seedHi, blockIndex,
+                                         visibilityIndex, 1));
     }
     symbolBufferPtr += visPerRow * 2;
   }
 }
-
-template void RowTimeBlockEncoder::encode<false>(
-    const StochasticEncoder<float> &gausEncoder, const FBuffer &buffer,
-    float *metaBuffer, symbol_t *symbolBuffer, size_t, uint64_t seed,
-    uint64_t blockIndex);
-template void RowTimeBlockEncoder::encode<true>(
-    const StochasticEncoder<float> &gausEncoder, const FBuffer &buffer,
-    float *metaBuffer, symbol_t *symbolBuffer, size_t, uint64_t seed,
-    uint64_t blockIndex);

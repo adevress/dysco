@@ -43,10 +43,6 @@ class TimeBlockEncoder {
 
   virtual ~TimeBlockEncoder() = default;
 
-  virtual void EncodeWithoutDithering(
-      const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
-      float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount) = 0;
-
   /**
    * Dithered encoding.  The dither is a pure function of
    * `(seed, blockIndex, symbolIndex)` through the counter-based Philox

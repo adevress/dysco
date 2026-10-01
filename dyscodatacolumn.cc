@@ -12,8 +12,6 @@ namespace dyscostman {
 void DyscoDataColumn::Prepare(DyscoDistribution distribution,
                               Normalization normalization, double studentsTNu,
                               double distributionTruncation) {
-  _distribution = distribution;
-  _studentsTNu = studentsTNu;
   _normalization = normalization;
   ThreadedDyscoColumn::Prepare(distribution, normalization, studentsTNu,
                                distributionTruncation);
