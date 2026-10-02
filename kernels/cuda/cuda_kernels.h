@@ -77,8 +77,11 @@ void k3_antenna_rms_matrix(MdSpan2D<const double> re,
                            dysco_stream_t stream);
 
 // ---------------------------------------------------------------- k4_antenna_gain_solve
+/// `nextScratch` is a buffer of `nAnt` doubles used as the second gain
+/// vector of the solver.
 void k4_antenna_gain_solve(MdSpan2D<const double> matrix,
                            cuda::std::span<double> rmsPerAntenna,
+                           cuda::std::span<double> nextScratch,
                            dysco_stream_t stream);
 /// Convert the double-precision gains into the float metadata region.
 void k4_store_antenna_gains(cuda::std::span<const double> rmsPerAntenna,

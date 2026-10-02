@@ -41,12 +41,12 @@ template <class T>
 using MdSpan2D =
     cuda::std::mdspan<T, cuda::std::dextents<cuda::std::size_t, 2>>;
 
-/// Component measure used by the encoder: `max(|re|, |im|)`, written in the
-/// same signed form as `AFTimeBlockEncoder::fitToMaximum` so the non-finite
-/// handling matches exactly.
+/// Component measure used by the encoder: `max(|re|, |im|)`.
+///
+/// Warning: cuda::max differs from std::max for Nan
 [[nodiscard]] DYSCO_HD DYSCO_INLINE double componentMax(double re,
                                                         double im) noexcept {
-  return cuda::std::fmax(cuda::std::fmax(re, im), -cuda::std::fmin(re, im));
+  return cuda::std::fmax(cuda::std::fabs(re), cuda::std::fabs(im));
 }
 
 /// Quiet NaN with the canonical IEEE-754 bit pattern (0x7ff8...), identical to

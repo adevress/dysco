@@ -20,6 +20,7 @@
  *     which keeps the headers parseable by a regular C++ compiler.
  */
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -37,6 +38,20 @@
 #define DYSCO_INLINE __forceinline__
 typedef cudaStream_t dysco_stream_t;
 #define DYSCO_DEFAULT_STREAM 0
+
+/// Precondition assertion for device (and `__host__ __device__`) code.
+///
+/// Unlike the standard `assert`, this check is *always* performed, regardless
+/// of `NDEBUG`: a violated precondition is a programming error, not a
+/// recoverable condition.  On failure it reports `precondition failed` with
+/// the call site (file, line, function) and aborts the thread/process.
+#define DYSCO_DEVICE_EXPECTS(condition)                        \
+  do {                                                         \
+    if (!(condition)) {                                        \
+      __assert_fail("precondition failed", __FILE__, __LINE__, \
+                    __func__);                                 \
+    }                                                          \
+  } while (false)
 
 namespace dysco_gpu {
 
@@ -91,6 +106,11 @@ struct ManagedDeleter {
 #define DYSCO_INLINE inline
 typedef void* dysco_stream_t;
 #define DYSCO_DEFAULT_STREAM 0
+
+/// Host-only fallback: there is no device code to guard, so the check maps to
+/// the standard `assert`.
+#define DYSCO_DEVICE_EXPECTS(condition) \
+  assert((condition) && "precondition failed")
 
 namespace dysco_gpu {
 [[nodiscard]] std::string_view device_name();

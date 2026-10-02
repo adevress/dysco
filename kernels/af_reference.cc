@@ -1,5 +1,6 @@
 #include "af_reference.h"
 
+#include "../preconditions.hpp"
 #include "philox_rng.h"
 
 #include <algorithm>
@@ -63,12 +64,17 @@ void solveAntennaGains(dysco::span<const double> matrix, std::size_t nAnt,
     double maxVal = 0.0;
     for (std::size_t i = 0; i != nAnt; ++i) {
       rms[i] = next[i] * 0.8 + rms[i] * 0.2;
+      // `std::max` on NaN is formally UB (NaN is not LessThanComparable);
+      // the reference path never produces NaN here, so make that explicit.
+      enforce_precondition(std::isfinite(rms[i]));
       maxVal = std::max(maxVal, rms[i]);
     }
     precision = 0.0;
     for (std::size_t i = 0; i != nAnt; ++i) {
       if (rms[i] < maxVal * 1e-5) rms[i] = 0.0;
-      precision = std::max(precision, std::fabs(rms[i] - next[i]) / maxVal);
+      const double relativeChange = std::fabs(rms[i] - next[i]) / maxVal;
+      enforce_precondition(std::isfinite(relativeChange));
+      precision = std::max(precision, relativeChange);
     }
   }
 }

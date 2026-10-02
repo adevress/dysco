@@ -76,6 +76,7 @@ struct AfCodec::Impl {
   Managed<float> meta;  // visPerRow + nPol*nAnt
   Managed<double> matrix;
   Managed<double> rmsPerAnt;
+  Managed<double> rmsScratch;  // K4 'next' vector (nAnt > block threads)
   Managed<std::uint32_t> symbols;
   Managed<std::uint8_t> packed;
   Managed<float> out;
@@ -101,6 +102,7 @@ struct AfCodec::Impl {
         meta(allocate<float>(visPerRow + nPol * nAnt)),
         matrix(allocate<double>(nAnt * nAnt)),
         rmsPerAnt(allocate<double>(nAnt)),
+        rmsScratch(allocate<double>(nAnt)),
         symbols(allocate<std::uint32_t>(2 * nVis)),
         packed(allocate<std::uint8_t>(packedBytes)),
         out(allocate<float>(2 * nVis)) {
@@ -185,6 +187,7 @@ void AfCodec::encode(dysco::span<const float> interleavedIn,
     k4_antenna_gain_solve(MdSpan2D<const double>(s.matrix.get(), s.nAnt,
                                                  s.nAnt),
                           cuda::std::span<double>(s.rmsPerAnt.get(), s.nAnt),
+                          cuda::std::span<double>(s.rmsScratch.get(), s.nAnt),
                           stream);
     k5b_apply_antenna_norm(re, im, ant1View, ant2View, s.nChannels, s.nPol,
                            pol,
