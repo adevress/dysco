@@ -243,7 +243,7 @@ __global__ void k6b_apply(MdSpan2D<double> re, MdSpan2D<double> im,
     const std::size_t vi = idx - row * visPerRow;
     const std::size_t pol = vi % nPol;
     // For autocorrelations (a1 == a2) the antenna factor enters twice, which
-    // matches `AFTimeBlockEncoder::changeAntennaFactor`.
+    // matches the CPU reference `changeAntennaFactor` (kernels/af_reference.cc).
     const double scale =
         G[vi] *
         F[pol * nAnt + static_cast<std::size_t>(ant1[row])] *

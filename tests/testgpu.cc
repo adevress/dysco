@@ -15,7 +15,7 @@
 #include "../dyscostman.h"
 #include "../kernels/af_reference.h"
 #include "../kernels/cuda/gpu_af_codec.h"
-#include "../kernels/cuda/philox_rng.h"
+#include "../kernels/philox_rng.h"
 #include "../stochasticencoder.h"
 
 // Boundary assertion: the production BytePacker (the storage format) is typed

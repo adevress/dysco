@@ -7,7 +7,6 @@
 
 #include <complex>
 #include <cstdint>
-#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -44,30 +43,17 @@ class TimeBlockEncoder {
 
   virtual ~TimeBlockEncoder() = default;
 
-  virtual void EncodeWithDithering(
-      const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
-      float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
-      std::mt19937 &rnd) = 0;
-
-  virtual void EncodeWithoutDithering(
-      const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
-      float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount) = 0;
-
   /**
-   * Counter-based (Random123/Philox) dithered encoding.  Unlike
-   * EncodeWithDithering(), the dither is a pure function of the symbol index,
-   * so the result does not depend on thread scheduling.  Encoders that do not
-   * implement a counter RNG fall back to the sequential one.
+   * Dithered encoding.  The dither is a pure function of
+   * `(seed, blockIndex, symbolIndex)` through the counter-based Philox
+   * generator (see kernels/philox_rng.h), so the result is independent of
+   * thread scheduling and of the number of threads, and is bit-identical
+   * between the CPU and GPU encoders.
    */
   virtual void EncodeWithCounterRng(
       const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
       float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
-      uint64_t seed, uint64_t blockIndex) {
-    (void)seed;
-    (void)blockIndex;
-    EncodeWithDithering(gausEncoder, buffer, metaBuffer, symbolBuffer,
-                        antennaCount, _fallbackRng);
-  }
+      uint64_t seed, uint64_t blockIndex) = 0;
 
   /**
    * Optional fast path that encodes *and* bit-packs the block on an
@@ -133,9 +119,6 @@ class TimeBlockEncoder {
 
  protected:
   TimeBlockEncoder() = default;
-
- private:
-  std::mt19937 _fallbackRng{};
 };
 
 #endif

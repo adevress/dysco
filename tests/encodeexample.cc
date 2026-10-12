@@ -1,9 +1,9 @@
+#include "../kernels/philox_rng.h"
 #include "../stochasticencoder.h"
 
 #include <boost/test/unit_test.hpp>
 
 #include <fstream>
-#include <random>
 #include <sstream>
 
 using namespace dyscostman;
@@ -14,9 +14,10 @@ const bool useUniform = false;
 BOOST_AUTO_TEST_SUITE(encode_example)
 
 void make(const std::string& filenamePrefix, aocommon::UVector<double> values) {
-  std::mt19937 mt;
-  std::uniform_int_distribution<unsigned> dist =
-      StochasticEncoder<double>::GetDitherDistribution();
+  const std::uint64_t seed = 0x0123456789ABCDEFull;
+  const std::uint32_t seedLo = static_cast<std::uint32_t>(seed);
+  const std::uint32_t seedHi = static_cast<std::uint32_t>(seed >> 32);
+  std::uint64_t symbolIndex = 0;
 
   double sqSum = 0.0;
   size_t count = 0;
@@ -41,7 +42,8 @@ void make(const std::string& filenamePrefix, aocommon::UVector<double> values) {
 
     for (size_t instance = 0; instance != trial; ++instance) {
       for (size_t i = 0; i != values.size(); ++i) {
-        unsigned dither = dist(mt);
+        const unsigned dither = random123::ditherValue(seedLo, seedHi, 0,
+                                                       symbolIndex++);
         sums[i] += enc.Decode(enc.EncodeWithDithering(values[i], dither));
       }
     }

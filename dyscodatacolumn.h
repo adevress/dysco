@@ -3,9 +3,10 @@
 
 #include "threadeddyscocolumn.h"
 
-#include "dysco_random.h"
 #include "stochasticencoder.h"
 #include "timeblockencoder.h"
+
+#include <random>
 
 namespace dyscostman {
 
@@ -24,14 +25,9 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
    */
   DyscoDataColumn(DyscoStMan *parent, int dtype)
       : ThreadedDyscoColumn(parent, dtype),
-        _rnd(std::random_device{}()),
         _philoxSeed(std::random_device{}()),
         _gausEncoder(),
-        _distribution(GaussianDistribution),
         _normalization(Normalization::kRF),
-        _studentsTNu(0.0),
-        _randomize(true),
-        _randomGenerator(RandomGenerator::kMersenneTwister),
         _gpuEnabled(false),
         _fitToMaximum(true) {}
 
@@ -49,14 +45,7 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
   void SetStaticRandomizationSeed() {
     std::cout
         << "Warning: Initializing random number generator with static seed!\n";
-    _rnd = std::mt19937();
-    _randomize = false;
     _philoxSeed = 0x9E3779B97F4A7C15ull;
-  }
-
-  /// Select the dither random generator (see dysco_random.h).
-  void SetRandomGenerator(RandomGenerator generator) {
-    _randomGenerator = generator;
   }
 
   /// Enable the GPU encoder/decoder for this column (requires ENABLE_CUDA).
@@ -102,25 +91,17 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
   virtual size_t symbolCount(size_t nRowsInBlock, size_t nPolarizations,
                              size_t nChannels) const override;
 
-  virtual size_t defaultThreadCount() const override;
-
  private:
   struct ThreadData final : public ThreadDataBase {
     ThreadData(std::unique_ptr<TimeBlockEncoder> timeBlockEncoder)
         : encoder(std::move(timeBlockEncoder)) {}
     std::unique_ptr<TimeBlockEncoder> encoder;
-    std::mt19937 rnd;
   };
 
-  std::mt19937 _rnd;
   uint64_t _philoxSeed;
   std::unique_ptr<StochasticEncoder<float>> _gausEncoder;
   std::unique_ptr<TimeBlockEncoder> _decoder;
-  DyscoDistribution _distribution;
   Normalization _normalization;
-  double _studentsTNu;
-  bool _randomize;
-  RandomGenerator _randomGenerator;
   bool _gpuEnabled;
   bool _fitToMaximum;
 };

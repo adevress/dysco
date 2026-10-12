@@ -10,6 +10,7 @@
 #include <casacore/tables/Tables/ScalarColumn.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 
 namespace dyscostman {
@@ -248,6 +249,13 @@ void ThreadedDyscoColumn<DataType>::Prepare(DyscoDistribution, Normalization,
 
 template <typename DataType>
 size_t ThreadedDyscoColumn<DataType>::defaultThreadCount() const {
+  // Optional override, mainly for tests that check that the compressed output
+  // is independent of the number of encoding threads (the counter-based dither
+  // makes it so).
+  if (const char *threadCount = std::getenv("DYSCO_THREAD_COUNT")) {
+    const long value = std::strtol(threadCount, nullptr, 10);
+    if (value > 0) return static_cast<size_t>(value);
+  }
   // Don't spawn more than 8 threads; it causes problems in NDPPP
   return std::min(8l, sysconf(_SC_NPROCESSORS_ONLN));
 }

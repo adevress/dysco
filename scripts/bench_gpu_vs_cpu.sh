@@ -42,16 +42,15 @@ run_case() {
 }
 
 printf "%-16s %10s %10s %s\n" "run" "compress" "wall[s]" "sha256(table.f1)"
-run_case mt        -rng mt                    -static-seed
-run_case phi       -rng philox                -static-seed
-run_case phi_nofit -rng philox -no-fit-to-max -static-seed
-run_case gpu_fit   -cuda -rng philox          -static-seed
-run_case gpu_nofit -cuda -rng philox -no-fit-to-max -static-seed
+run_case cpu       -static-seed
+run_case cpu_nofit -no-fit-to-max -static-seed
+run_case gpu_fit   -cuda -static-seed
+run_case gpu_nofit -cuda -no-fit-to-max -static-seed
 
 # Decode one compressed file on both backends and compare.
 rm -rf "$WORK/dec_cpu.ms" "$WORK/dec_gpu.ms"
-cp -r "$WORK/phi_nofit.ms" "$WORK/dec_cpu.ms"
-cp -r "$WORK/phi_nofit.ms" "$WORK/dec_gpu.ms"
+cp -r "$WORK/cpu_nofit.ms" "$WORK/dec_cpu.ms"
+cp -r "$WORK/cpu_nofit.ms" "$WORK/dec_gpu.ms"
 "$DECOMPRESS"             "$WORK/dec_cpu.ms" > /dev/null
 "$DECOMPRESS" -cuda        "$WORK/dec_gpu.ms" > /dev/null
 echo

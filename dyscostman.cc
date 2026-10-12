@@ -37,7 +37,6 @@ DyscoStMan::DyscoStMan(unsigned dataBitCount, unsigned weightBitCount,
       _studentTNu(0.0),
       _distributionTruncation(2.5),
       _staticSeed(false),
-      _randomGenerator(RandomGenerator::kMersenneTwister),
       _gpuEnabled(false),
       _fitToMaximum(true) {}
 
@@ -58,7 +57,6 @@ DyscoStMan::DyscoStMan(const casacore::String &name,
       _studentTNu(0.0),
       _distributionTruncation(0.0),
       _staticSeed(false),
-      _randomGenerator(RandomGenerator::kMersenneTwister),
       _gpuEnabled(GlobalGpuEnabled()),
       _fitToMaximum(true) {
   setFromSpec(spec);
@@ -80,7 +78,6 @@ DyscoStMan::DyscoStMan(const DyscoStMan &source)
       _studentTNu(source._studentTNu),
       _distributionTruncation(source._distributionTruncation),
       _staticSeed(source._staticSeed),
-      _randomGenerator(source._randomGenerator),
       _gpuEnabled(source._gpuEnabled),
       _fitToMaximum(source._fitToMaximum) {}
 
@@ -121,6 +118,8 @@ void DyscoStMan::setFromSpec(const casacore::Record &spec) {
     else
       _studentTNu = 0.0;
     _distributionTruncation = spec.asDouble("distributionTruncation");
+    if (spec.description().fieldNumber("staticSeed") >= 0)
+      _staticSeed = spec.asBool("staticSeed");
   }
 }
 
@@ -168,6 +167,7 @@ casacore::Record DyscoStMan::dataManagerSpec() const {
   spec.define("normalization", normStr);
   spec.define("studentTNu", _studentTNu);
   spec.define("distributionTruncation", _distributionTruncation);
+  spec.define("staticSeed", _staticSeed);
   return spec;
 }
 
@@ -343,7 +343,6 @@ casacore::DataManagerColumn *DyscoStMan::makeDirArrColumn(
   } else if (dataType == casacore::TpComplex) {
     col.reset(new DyscoDataColumn(this, dataType));
     DyscoDataColumn &dataCol = static_cast<DyscoDataColumn &>(*col);
-    dataCol.SetRandomGenerator(_randomGenerator);
     dataCol.SetGpuEnabled(_gpuEnabled);
     dataCol.SetFitToMaximum(_fitToMaximum);
     if (_staticSeed) dataCol.SetStaticRandomizationSeed();

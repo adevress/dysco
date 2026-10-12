@@ -1,6 +1,7 @@
 #include "af_reference.h"
 
-#include "cuda/philox_rng.h"
+#include "../preconditions.hpp"
+#include "philox_rng.h"
 
 #include <algorithm>
 #include <cmath>
@@ -63,12 +64,17 @@ void solveAntennaGains(dysco::span<const double> matrix, std::size_t nAnt,
     double maxVal = 0.0;
     for (std::size_t i = 0; i != nAnt; ++i) {
       rms[i] = next[i] * 0.8 + rms[i] * 0.2;
+      // `std::max` on NaN is formally UB (NaN is not LessThanComparable);
+      // the reference path never produces NaN here, so make that explicit.
+      enforce_precondition(std::isfinite(rms[i]));
       maxVal = std::max(maxVal, rms[i]);
     }
     precision = 0.0;
     for (std::size_t i = 0; i != nAnt; ++i) {
       if (rms[i] < maxVal * 1e-5) rms[i] = 0.0;
-      precision = std::max(precision, std::fabs(rms[i] - next[i]) / maxVal);
+      const double relativeChange = std::fabs(rms[i] - next[i]) / maxVal;
+      enforce_precondition(std::isfinite(relativeChange));
+      precision = std::max(precision, relativeChange);
     }
   }
 }
@@ -322,10 +328,10 @@ void cpuAfEncode(dysco::span<const float> interleaved,
     const auto base = static_cast<std::uint64_t>(i) * 2;
     symbolsOut[base] = quantizeDitherRef(
         static_cast<float>(re[i]), decValues,
-        random123::ditherValue(seedLo, seedHi, blockIndex, base));
+        random123::ditherForVisibility(seedLo, seedHi, blockIndex, i, 0));
     symbolsOut[base + 1] = quantizeDitherRef(
         static_cast<float>(im[i]), decValues,
-        random123::ditherValue(seedLo, seedHi, blockIndex, base + 1));
+        random123::ditherForVisibility(seedLo, seedHi, blockIndex, i, 1));
   }
 }
 
