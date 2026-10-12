@@ -6,7 +6,6 @@
 #include "uvector.h"
 
 #include <complex>
-#include <random>
 #include <vector>
 
 #include "timeblockencoder.h"
@@ -17,21 +16,15 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
 
   virtual ~AFTimeBlockEncoder() override;
 
-  virtual void EncodeWithDithering(
+  /**
+   * Bit-compatible counterpart of the GPU encoder: same normalization order
+   * as kernels K1..K6 and Philox dither as kernel K7, implemented by the
+   * shared CPU reference in kernels/af_reference.cc.
+   */
+  virtual void EncodeWithCounterRng(
       const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
       float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
-      std::mt19937 &rnd) final override {
-    encode<true>(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount,
-                 &rnd);
-  }
-
-  virtual void EncodeWithoutDithering(
-      const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
-      float *metaBuffer, symbol_t *symbolBuffer,
-      size_t antennaCount) final override {
-    encode<false>(gausEncoder, buffer, metaBuffer, symbolBuffer, antennaCount,
-                  0);
-  }
+      uint64_t seed, uint64_t blockIndex) final override;
 
   virtual void InitializeDecode(const float *metaBuffer, size_t nRow,
                                 size_t nAntennae) final override;
@@ -59,32 +52,11 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
     return nPol * (nChannels + nAntennae);
   }
 
-  // (Function is currently unused)
-  void Normalize(const dyscostman::StochasticEncoder<float> &gausEncoder,
-                 TimeBlockBuffer<std::complex<float>> &buffer,
-                 size_t antennaCount);
-
  private:
-  void calculateAntennaeRMS(const std::vector<DBufferRow> &data,
-                            size_t polIndex, size_t antennaCount);
-
-  template <bool UseDithering>
-  void encode(const dyscostman::StochasticEncoder<float> &gausEncoder,
-              const FBuffer &buffer, float *metaBuffer, symbol_t *symbolBuffer,
-              size_t antennaCount, std::mt19937 *rnd);
-
-  void changeAntennaFactor(std::vector<DBufferRow> &data, float *metaBuffer,
-                           size_t antennaIndex, size_t antennaCount,
-                           size_t polIndex, double factor);
-
-  void fitToMaximum(std::vector<DBufferRow> &data, float *metaBuffer,
-                    double max_level, size_t antennaCount);
-
   size_t _nPol, _nChannels;
   bool _fitToMaximum;
 
   aocommon::UVector<double> _rmsPerChannel, _rmsPerAntenna;
-  std::uniform_int_distribution<unsigned> _ditherDist;
 };
 
 #endif

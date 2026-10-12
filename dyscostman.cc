@@ -10,6 +10,13 @@ void register_dyscostman() { dyscostman::DyscoStMan::registerClass(); }
 
 namespace dyscostman {
 
+namespace {
+bool g_globalGpuEnabled = false;
+}
+
+void SetGlobalGpuEnabled(bool enabled) { g_globalGpuEnabled = enabled; }
+bool GlobalGpuEnabled() { return g_globalGpuEnabled; }
+
 const unsigned short DyscoStMan::VERSION_MAJOR = 1,
                      DyscoStMan::VERSION_MINOR = 0;
 
@@ -29,7 +36,9 @@ DyscoStMan::DyscoStMan(unsigned dataBitCount, unsigned weightBitCount,
       _normalization(Normalization::kAF),
       _studentTNu(0.0),
       _distributionTruncation(2.5),
-      _staticSeed(false) {}
+      _staticSeed(false),
+      _gpuEnabled(false),
+      _fitToMaximum(true) {}
 
 DyscoStMan::DyscoStMan(const casacore::String &name,
                        const casacore::Record &spec)
@@ -47,7 +56,9 @@ DyscoStMan::DyscoStMan(const casacore::String &name,
       _normalization(Normalization::kAF),
       _studentTNu(0.0),
       _distributionTruncation(0.0),
-      _staticSeed(false) {
+      _staticSeed(false),
+      _gpuEnabled(GlobalGpuEnabled()),
+      _fitToMaximum(true) {
   setFromSpec(spec);
 }
 
@@ -66,7 +77,9 @@ DyscoStMan::DyscoStMan(const DyscoStMan &source)
       _normalization(source._normalization),
       _studentTNu(source._studentTNu),
       _distributionTruncation(source._distributionTruncation),
-      _staticSeed(source._staticSeed) {}
+      _staticSeed(source._staticSeed),
+      _gpuEnabled(source._gpuEnabled),
+      _fitToMaximum(source._fitToMaximum) {}
 
 void DyscoStMan::setFromSpec(const casacore::Record &spec) {
   // Here we need to load from _spec
@@ -105,6 +118,8 @@ void DyscoStMan::setFromSpec(const casacore::Record &spec) {
     else
       _studentTNu = 0.0;
     _distributionTruncation = spec.asDouble("distributionTruncation");
+    if (spec.description().fieldNumber("staticSeed") >= 0)
+      _staticSeed = spec.asBool("staticSeed");
   }
 }
 
@@ -152,6 +167,7 @@ casacore::Record DyscoStMan::dataManagerSpec() const {
   spec.define("normalization", normStr);
   spec.define("studentTNu", _studentTNu);
   spec.define("distributionTruncation", _distributionTruncation);
+  spec.define("staticSeed", _staticSeed);
   return spec;
 }
 
@@ -326,8 +342,10 @@ casacore::DataManagerColumn *DyscoStMan::makeDirArrColumn(
           "Trying to create a Dysco weight column with wrong type");
   } else if (dataType == casacore::TpComplex) {
     col.reset(new DyscoDataColumn(this, dataType));
-    if (_staticSeed)
-      static_cast<DyscoDataColumn &>(*col).SetStaticRandomizationSeed();
+    DyscoDataColumn &dataCol = static_cast<DyscoDataColumn &>(*col);
+    dataCol.SetGpuEnabled(_gpuEnabled);
+    dataCol.SetFitToMaximum(_fitToMaximum);
+    if (_staticSeed) dataCol.SetStaticRandomizationSeed();
   } else
     throw DyscoStManError(
         "Trying to create a Dysco data column with wrong type");

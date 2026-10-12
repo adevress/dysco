@@ -48,7 +48,8 @@ class DyscoWeightColumn final : public ThreadedDyscoColumn<float> {
 
   virtual void encode(ThreadDataBase *threadData,
                       TimeBlockBuffer<data_t> *buffer, float *metaBuffer,
-                      symbol_t *symbolBuffer, size_t nAntennae) override;
+                      symbol_t *symbolBuffer, size_t nAntennae,
+                      uint64_t /*blockIndex*/) override;
 
   virtual size_t metaDataFloatCount(size_t /*nRows*/, size_t /*nPolarizations*/,
                                     size_t /*nChannels*/,

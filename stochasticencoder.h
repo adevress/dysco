@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 #include "dictionary.h"
 
@@ -85,10 +86,6 @@ class StochasticEncoder {
       return QuantizationCount() - 1;
   }
 
-  static std::uniform_int_distribution<unsigned> GetDitherDistribution() {
-    return std::uniform_int_distribution<unsigned>(0, ((1u << 31) - 1));
-  }
-
   /**
    * Get the quantized symbol for the given floating point value.
    * Dithering is applied, which will cause the average error to
@@ -97,6 +94,9 @@ class StochasticEncoder {
    * O(log N), with N the dictionary size (2^bitcount).
    * Use Decode() on the returned symbol to get
    * the decoded value.
+   * The @p ditherValue comes from the counter-based Philox generator
+   * (kernels/philox_rng.h) and lies in [0, 2^31), matching the threshold
+   * computed below.
    * @param value Floating point value to be encoded.
    * @param ditherValue The dithering value to apply.
    */
@@ -145,6 +145,17 @@ class StochasticEncoder {
   }
 
   size_t QuantizationCount() const { return _decDictionary.size() + 1; }
+
+  /**
+   * The decode dictionary (centroids), size QuantizationCount()-1.  This is
+   * the table indexed by a symbol during decoding, and is also used as the
+   * boundary table during dithered encoding.  The GPU backend needs it
+   * explicitly (the GPU cannot call into this object).
+   */
+  std::vector<ValueType> DecodeValues() const {
+    return std::vector<ValueType>(_decDictionary.begin(),
+                                  _decDictionary.end());
+  }
 
   ValueType MaxQuantity() const { return _decDictionary.largest_value(); }
 

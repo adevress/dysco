@@ -1,6 +1,6 @@
 #include <cmath>
-#include <random>
 
+#include "../kernels/philox_rng.h"
 #include "../stochasticencoder.h"
 
 #include <boost/test/unit_test.hpp>
@@ -29,9 +29,10 @@ BOOST_AUTO_TEST_CASE(avg_deviation) {
     sumsUndithered[j] = 0.0;
     sumsDithered[j] = 0.0;
   }
-  std::mt19937 mt;
-  std::uniform_int_distribution<unsigned> distribution =
-      encoder->GetDitherDistribution();
+  const std::uint64_t seed = 0x0123456789ABCDEFull;
+  const std::uint32_t seedLo = static_cast<std::uint32_t>(seed);
+  const std::uint32_t seedHi = static_cast<std::uint32_t>(seed >> 32);
+  std::uint64_t symbolIndex = 0;
   // 	std::cout << "Input: ";
   // 	for(size_t j=0; j!=N; ++j) std::cout << ' ' << values[j];
   // 	std::cout << "\nDecoded without dithering: ";
@@ -45,8 +46,9 @@ BOOST_AUTO_TEST_CASE(avg_deviation) {
   for (size_t i = 0; i != 1000000; ++i) {
     for (size_t j = 0; j != N; ++j) {
       sumsUndithered[j] += encoder->Decode(encoder->Encode(values[j]));
-      sumsDithered[j] += encoder->Decode(
-          encoder->EncodeWithDithering(values[j], distribution(mt)));
+      sumsDithered[j] += encoder->Decode(encoder->EncodeWithDithering(
+          values[j], dyscostman::random123::ditherValue(seedLo, seedHi, 0,
+                                                        symbolIndex++)));
     }
     if (i+1 == check_point) {
       check_point *= 100;

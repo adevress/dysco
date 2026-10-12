@@ -6,7 +6,8 @@
 #include "uvector.h"
 
 #include <complex>
-#include <random>
+#include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 class RMSMeasurement {
@@ -42,14 +43,62 @@ class TimeBlockEncoder {
 
   virtual ~TimeBlockEncoder() = default;
 
-  virtual void EncodeWithDithering(
+  /**
+   * Dithered encoding.  The dither is a pure function of
+   * `(seed, blockIndex, symbolIndex)` through the counter-based Philox
+   * generator (see kernels/philox_rng.h), so the result is independent of
+   * thread scheduling and of the number of threads, and is bit-identical
+   * between the CPU and GPU encoders.
+   */
+  virtual void EncodeWithCounterRng(
       const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
       float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount,
-      std::mt19937 &rnd) = 0;
+      uint64_t seed, uint64_t blockIndex) = 0;
 
-  virtual void EncodeWithoutDithering(
+  /**
+   * Optional fast path that encodes *and* bit-packs the block on an
+   * accelerator.  Returns true when @p packed was filled (number of bytes in
+   * @p packedBytes).  The default returns false, in which case the caller
+   * runs EncodeWithCounterRng() + BytePacker::pack().
+   */
+  virtual bool EncodePacked(
       const dyscostman::StochasticEncoder<float> &gausEncoder, FBuffer &buffer,
-      float *metaBuffer, symbol_t *symbolBuffer, size_t antennaCount) = 0;
+      float *metaBuffer, unsigned char *packed, size_t antennaCount,
+      uint64_t seed, uint64_t blockIndex, size_t &packedBytes) {
+    (void)gausEncoder;
+    (void)buffer;
+    (void)metaBuffer;
+    (void)packed;
+    (void)antennaCount;
+    (void)seed;
+    (void)blockIndex;
+    (void)packedBytes;
+    return false;
+  }
+
+  /**
+   * Decode a whole *packed* block at once, without a prior host unpack step.
+   * Accelerators override this.  Returns true when @p buffer was filled.
+   */
+  virtual bool DecodePacked(const dyscostman::StochasticEncoder<float> &,
+                            FBuffer &, const unsigned char *, size_t, const int *,
+                            const int *, size_t, size_t, const float *) {
+    return false;
+  }
+
+  /**
+   * Decode a whole block at once.  The default implementation loops over the
+   * rows calling Decode(); accelerators override this to decode in bulk.
+   * InitializeDecode() must have been called before.
+   */
+  virtual void DecodeBlock(const dyscostman::StochasticEncoder<float> &gausEncoder,
+                           FBuffer &buffer, const symbol_t *symbolBuffer,
+                           const int *ant1, const int *ant2, size_t nRows,
+                           size_t /*nAntennae*/, const float * /*metaBuffer*/) {
+    for (size_t row = 0; row != nRows; ++row)
+      Decode(gausEncoder, buffer, symbolBuffer, row,
+             static_cast<size_t>(ant1[row]), static_cast<size_t>(ant2[row]));
+  }
 
   virtual void InitializeDecode(const float *metaBuffer, size_t nRow,
                                 size_t nAntennae) = 0;
