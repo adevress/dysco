@@ -29,6 +29,7 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
         _gausEncoder(),
         _normalization(Normalization::kRF),
         _gpuEnabled(false),
+        _ispcEnabled(false),
         _fitToMaximum(true) {}
 
   DyscoDataColumn(const DyscoDataColumn &source) = delete;
@@ -50,6 +51,9 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
 
   /// Enable the GPU encoder/decoder for this column (requires ENABLE_CUDA).
   void SetGpuEnabled(bool enabled) { _gpuEnabled = enabled; }
+
+  /// Enable the ISPC encoder/decoder for this column (requires ENABLE_ISPC).
+  void SetIspcEnabled(bool enabled) { _ispcEnabled = enabled; }
 
   /// Enable the AF fit-to-maximum post-normalization.
   void SetFitToMaximum(bool enabled) { _fitToMaximum = enabled; }
@@ -103,6 +107,7 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
   std::unique_ptr<TimeBlockEncoder> _decoder;
   Normalization _normalization;
   bool _gpuEnabled;
+  bool _ispcEnabled;
   bool _fitToMaximum;
 };
 

@@ -1,0 +1,83 @@
+// Shared helpers for the Dysco ISPC kernels.
+//
+// This is the ISPC mirror of the device-side helpers in
+// `kernels/cuda/cuda_cccl.cuh` and `kernels/philox_rng.h`: the component
+// measure used by the encoder and the counter-based Philox dither.  Keeping
+// them in one ISPH file means every ISPC kernel that needs them (K6 and K7)
+// sees exactly the same implementation, and the sequence is identical to the
+// CPU/CUDA backends.
+
+#pragma once
+
+// Component measure used by the encoder: max(|re|, |im|).  ISPC's `max` on
+// doubles is IEEE-754 maxNum, matching `cuda::std::fmax` / `std::fmax`.
+inline double ispc_component_max(double re, double im) {
+  return max(abs(re), abs(im));
+}
+
+// Philox4x32-10, returning the same 31-bit dither as the CPU/CUDA helpers.
+//
+// The counter is (symbolIndex, blockIndex) split into 32-bit words and the key
+// is the 64-bit column seed; the output is a pure function of the address, so
+// the sequence is independent of how the work is distributed over SIMD lanes.
+inline uint32 ispc_philox_dither(uint32 seedLo, uint32 seedHi,
+                                 uint64 blockIndex, uint64 symbolIndex) {
+  uint32 c0 = (uint32)symbolIndex;
+  uint32 c1 = (uint32)(symbolIndex >> 32);
+  uint32 c2 = (uint32)blockIndex;
+  uint32 c3 = (uint32)(blockIndex >> 32);
+  uint32 k0 = seedLo;
+  uint32 k1 = seedHi;
+  for (int round = 0; round < 10; ++round) {
+    const uint64 p0 = (uint64)0xD2511F53u * (uint64)c0;
+    const uint64 p1 = (uint64)0xCD9E8D57u * (uint64)c2;
+    const uint32 hi0 = (uint32)(p0 >> 32);
+    const uint32 lo0 = (uint32)p0;
+    const uint32 hi1 = (uint32)(p1 >> 32);
+    const uint32 lo1 = (uint32)p1;
+    const uint32 n0 = hi1 ^ c1 ^ k0;
+    const uint32 n2 = hi0 ^ c3 ^ k1;
+    c0 = n0;
+    c1 = lo1;
+    c2 = n2;
+    c3 = lo0;
+    if (round != 9) {
+      k0 += 0x9E3779B9u;
+      k1 += 0xBB67AE85u;
+    }
+  }
+  return c0 & 0x7fffffffu;
+}
+
+// Dither value for one phase (0 = real, 1 = imaginary) of the visibility at
+// `visibilityIndex`.  Mirrors `random123::ditherForVisibility`.
+inline uint32 ispc_dither_for_visibility(uint32 seedLo, uint32 seedHi,
+                                         uint64 blockIndex,
+                                         uint64 visibilityIndex,
+                                         unsigned int phase) {
+  return ispc_philox_dither(seedLo, seedHi, blockIndex,
+                            visibilityIndex * 2 + phase);
+}
+
+// Lower-bound + stochastic rounding, mirroring the CPU reference
+// `quantizeDitherRef` and the CUDA `quantizeDither`.
+inline uint32 ispc_quantize_dither(float value, const uniform float decValues[],
+                                   uniform int decCount, uint32 dither) {
+  if (!isfinite(value)) return (uint32)decCount;
+  int lo = 0;
+  int hi = decCount;
+  while (lo < hi) {
+    const int mid = (lo + hi) >> 1;
+    if (decValues[mid] < value)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  if (lo == 0) return 0;
+  if (lo >= decCount) return (uint32)(decCount - 1);
+  const float rightValue = decValues[lo];
+  const float leftValue = decValues[lo - 1];
+  const float ditherMark =
+      2147483648.0f * (value - leftValue) / (rightValue - leftValue);
+  return ditherMark > (float)dither ? (uint32)lo : (uint32)(lo - 1);
+}
