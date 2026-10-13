@@ -22,6 +22,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(BUILD_PACKAGES "Build Debian packages" OFF)
 option(ENABLE_CUDA "Build the CUDA GPU backend" OFF)
+option(ENABLE_ISPC "Build the ISPC (CPU SIMD) backend" OFF)
 option(ENABLE_NVBENCH "Build nvbench-based benchmarks (requires ENABLE_CUDA)"
        OFF)
 
@@ -42,6 +43,74 @@ set(DYSCO_SOURCES
   kernels/af_reference.cc)
 
 set(DYSCO_GPU_SOURCES)
+set(DYSCO_ISPC_SOURCES)
+set(DYSCO_ISPC_GENERATED_HEADERS)
+set(DYSCO_ISPC_LIBRARY)
+set(DYSCO_TEST_ISPC_SOURCES)
+
+if(ENABLE_ISPC)
+  find_program(ISPC_EXECUTABLE ispc REQUIRED)
+  add_compile_definitions(DYSCO_HAS_ISPC)
+  list(APPEND DYSCO_SOURCES ispc_af_time_block_encoder.cc)
+
+  set(ISPC_TARGET
+      "auto"
+      CACHE STRING
+            "ISPC target ISA: auto, neon-i32x4, avx2-i32x8, avx512skx-x16, ...")
+  if(ISPC_TARGET STREQUAL "auto")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+      set(ISPC_TARGET "neon-i32x4")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+      set(ISPC_TARGET "avx2-i32x8")
+    else()
+      set(ISPC_TARGET "sse2-i32x4")
+    endif()
+  endif()
+  add_compile_definitions(DYSCO_ISPC_TARGET="${ISPC_TARGET}")
+  message(STATUS "Dysco ISPC backend enabled (target ${ISPC_TARGET})")
+
+  set(ISPC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/ispc_gen)
+  file(MAKE_DIRECTORY ${ISPC_GEN_DIR})
+  set(ISPC_KERNELS
+      k1_gather_convert
+      k2_channel_rms
+      k3_antenna_rms_matrix
+      k4_antenna_gain_solve
+      k5_apply_norm
+      k6_fit_to_max
+      k7_quantize_dither
+      k8_bit_pack
+      d1_bit_unpack
+      d2_dequantize)
+  foreach(kernel ${ISPC_KERNELS})
+    set(obj ${ISPC_GEN_DIR}/${kernel}_ispc.o)
+    set(hdr ${ISPC_GEN_DIR}/${kernel}_ispc.h)
+    add_custom_command(
+      OUTPUT ${obj} ${hdr}
+      COMMAND ${ISPC_EXECUTABLE} --target=${ISPC_TARGET} -O3 --pic
+              -I${CMAKE_CURRENT_SOURCE_DIR}/kernels/ispc
+              ${CMAKE_CURRENT_SOURCE_DIR}/kernels/ispc/${kernel}.ispc
+              -o ${obj} -h ${hdr}
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/ispc/${kernel}.ispc
+              ${CMAKE_CURRENT_SOURCE_DIR}/kernels/ispc/ispc_common.isph
+      COMMENT "ISPC: ${kernel}.ispc (${ISPC_TARGET})"
+      VERBATIM)
+    list(APPEND DYSCO_ISPC_SOURCES ${obj})
+    list(APPEND DYSCO_ISPC_GENERATED_HEADERS ${hdr})
+  endforeach()
+
+  # The host-side orchestration and the generated headers form one static
+  # library, linked into every target that uses the ISPC backend.
+  add_library(dysco_ispc STATIC kernels/ispc/ispc_af_codec.cc
+                                ${DYSCO_ISPC_SOURCES}
+                                ${DYSCO_ISPC_GENERATED_HEADERS})
+  set_property(TARGET dysco_ispc PROPERTY POSITION_INDEPENDENT_CODE 1)
+  target_include_directories(dysco_ispc
+                             PUBLIC ${ISPC_GEN_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+  set(DYSCO_ISPC_LIBRARY dysco_ispc)
+  set(DYSCO_TEST_ISPC_SOURCES tests/testispc.cc)
+endif()
+
 if(ENABLE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
@@ -84,7 +153,7 @@ set_property(TARGET dyscostman-object PROPERTY POSITION_INDEPENDENT_CODE 1)
 add_library(dyscostman SHARED $<TARGET_OBJECTS:dyscostman-object>)
 set_target_properties(dyscostman PROPERTIES SOVERSION 0)
 target_link_libraries(dyscostman ${GSL_LIBRARIES} ${CASACORE_LIBRARIES}
-                      ${CMAKE_THREAD_LIBS_INIT})
+                      ${CMAKE_THREAD_LIBS_INIT} ${DYSCO_ISPC_LIBRARY})
 if(ENABLE_CUDA)
   target_link_libraries(dyscostman CUDA::cudart)
 endif()
@@ -159,10 +228,12 @@ if(Boost_FOUND)
     tests/testdyscostman.cc
     tests/testphilox.cc
     tests/testtimeblockencoder.cc
-    ${DYSCO_TEST_GPU_SOURCES})
+    ${DYSCO_TEST_GPU_SOURCES}
+    ${DYSCO_TEST_ISPC_SOURCES})
   target_link_libraries(
     runtests ${Boost_FILESYSTEM_LIBRARY} ${Boost_SYSTEM_LIBRARY}
-    ${GSL_LIBRARIES} ${CASACORE_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+    ${GSL_LIBRARIES} ${CASACORE_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+    ${DYSCO_ISPC_LIBRARY})
   if(ENABLE_CUDA)
     target_link_libraries(runtests CUDA::cudart)
   endif()

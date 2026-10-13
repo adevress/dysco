@@ -19,7 +19,7 @@ void createDyscoStManColumn(casacore::Table &ms, const std::string &name,
                             Normalization normalization,
                             DyscoDistribution distribution, double studentsTNu,
                             double distributionTruncation, bool staticSeed,
-                            bool useGpu, bool fitToMaximum) {
+                            bool useGpu, bool useIspc, bool fitToMaximum) {
   std::cout << "Constructing new column '" << name << "'...\n";
   casacore::ArrayColumnDesc<T> columnDesc(name, "", "DyscoStMan", "DyscoStMan",
                                           shape);
@@ -53,6 +53,10 @@ void createDyscoStManColumn(casacore::Table &ms, const std::string &name,
     if (useGpu) {
       std::cout << "Enabling CUDA backend...\n";
       dataManager.SetGpuEnabled(true);
+    }
+    if (useIspc) {
+      std::cout << "Enabling ISPC backend...\n";
+      dataManager.SetIspcEnabled(true);
     }
     if (staticSeed) {
       std::cout << "Setting static seed...\n";
@@ -132,6 +136,9 @@ int main(int argc, char *argv[]) {
            "-cuda\n"
            "\tUse the CUDA backend for compression (requires a build with "
            "ENABLE_CUDA).\n"
+           "-ispc\n"
+           "\tUse the ISPC (CPU SIMD) backend for compression (requires a "
+           "build with ENABLE_ISPC).\n"
            "-fit-to-max / -no-fit-to-max\n"
            "\tEnable/disable the AF fit-to-maximum post-normalization "
            "(default: on).\n"
@@ -151,6 +158,7 @@ int main(int argc, char *argv[]) {
   double distributionTruncation = 2.5;
   bool staticSeed = false;
   bool useGpu = false;
+  bool useIspc = false;
   bool fitToMaximum = true;
 
   std::vector<std::string> columnNames;
@@ -189,6 +197,8 @@ int main(int argc, char *argv[]) {
       staticSeed = true;
     } else if (p == "cuda") {
       useGpu = true;
+    } else if (p == "ispc") {
+      useIspc = true;
     } else if (p == "no-fit-to-max") {
       fitToMaximum = false;
     } else if (p == "fit-to-max") {
@@ -227,6 +237,9 @@ int main(int argc, char *argv[]) {
   std::cout << "\n"
                "\tcuda backend = "
             << (useGpu ? "\ton" : "off")
+            << "\n"
+               "\tispc backend = "
+            << (useIspc ? "\ton" : "off")
             << "\n"
                "\tnormalization = ";
   switch (normalization) {
@@ -373,12 +386,12 @@ int main(int argc, char *argv[]) {
         createDyscoStManColumn<float>(
             *ms, columnName, shape, bitsPerFloat, bitsPerWeight, normalization,
             distribution, 1.0, distributionTruncation, staticSeed, useGpu,
-            fitToMaximum);
+            useIspc, fitToMaximum);
       else
         createDyscoStManColumn<casacore::Complex>(
             *ms, columnName, shape, bitsPerFloat, bitsPerWeight, normalization,
             distribution, 1.0, distributionTruncation, staticSeed, useGpu,
-            fitToMaximum);
+            useIspc, fitToMaximum);
     }
     for (std::string columnName : columnNames) {
       if (columnName == "WEIGHT_SPECTRUM")

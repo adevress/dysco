@@ -7,6 +7,10 @@
 #include "gpu_af_time_block_encoder.h"
 #endif
 
+#ifdef DYSCO_HAS_ISPC
+#include "ispc_af_time_block_encoder.h"
+#endif
+
 namespace dyscostman {
 
 void DyscoDataColumn::Prepare(DyscoDistribution distribution,
@@ -39,12 +43,22 @@ void DyscoDataColumn::Prepare(DyscoDistribution distribution,
   }
 
   bool useGpu = false;
+  bool useIspc = false;
 #ifdef DYSCO_HAS_CUDA
   useGpu = _gpuEnabled && normalization == Normalization::kAF;
+#endif
+#ifdef DYSCO_HAS_ISPC
+  useIspc = !useGpu && _ispcEnabled && normalization == Normalization::kAF;
 #endif
   if (useGpu) {
 #ifdef DYSCO_HAS_CUDA
     _decoder.reset(new GpuAFTimeBlockEncoder(
+        nPolarizations, nChannels, _gausEncoder->DecodeValues(),
+        getBitsPerSymbol(), _fitToMaximum));
+#endif
+  } else if (useIspc) {
+#ifdef DYSCO_HAS_ISPC
+    _decoder.reset(new IspcAFTimeBlockEncoder(
         nPolarizations, nChannels, _gausEncoder->DecodeValues(),
         getBitsPerSymbol(), _fitToMaximum));
 #endif
@@ -99,12 +113,22 @@ DyscoDataColumn::initializeEncodeThread() {
   const size_t nPolarizations = shape()[0], nChannels = shape()[1];
   std::unique_ptr<TimeBlockEncoder> encoder;
   bool useGpu = false;
+  bool useIspc = false;
 #ifdef DYSCO_HAS_CUDA
   useGpu = _gpuEnabled && _normalization == Normalization::kAF;
+#endif
+#ifdef DYSCO_HAS_ISPC
+  useIspc = !useGpu && _ispcEnabled && _normalization == Normalization::kAF;
 #endif
   if (useGpu) {
 #ifdef DYSCO_HAS_CUDA
     encoder.reset(new GpuAFTimeBlockEncoder(
+        nPolarizations, nChannels, _gausEncoder->DecodeValues(),
+        getBitsPerSymbol(), _fitToMaximum));
+#endif
+  } else if (useIspc) {
+#ifdef DYSCO_HAS_ISPC
+    encoder.reset(new IspcAFTimeBlockEncoder(
         nPolarizations, nChannels, _gausEncoder->DecodeValues(),
         getBitsPerSymbol(), _fitToMaximum));
 #endif

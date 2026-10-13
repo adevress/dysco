@@ -12,10 +12,14 @@ namespace dyscostman {
 
 namespace {
 bool g_globalGpuEnabled = false;
+bool g_globalIspcEnabled = false;
 }
 
 void SetGlobalGpuEnabled(bool enabled) { g_globalGpuEnabled = enabled; }
 bool GlobalGpuEnabled() { return g_globalGpuEnabled; }
+
+void SetGlobalIspcEnabled(bool enabled) { g_globalIspcEnabled = enabled; }
+bool GlobalIspcEnabled() { return g_globalIspcEnabled; }
 
 const unsigned short DyscoStMan::VERSION_MAJOR = 1,
                      DyscoStMan::VERSION_MINOR = 0;
@@ -38,6 +42,7 @@ DyscoStMan::DyscoStMan(unsigned dataBitCount, unsigned weightBitCount,
       _distributionTruncation(2.5),
       _staticSeed(false),
       _gpuEnabled(false),
+      _ispcEnabled(false),
       _fitToMaximum(true) {}
 
 DyscoStMan::DyscoStMan(const casacore::String &name,
@@ -58,6 +63,7 @@ DyscoStMan::DyscoStMan(const casacore::String &name,
       _distributionTruncation(0.0),
       _staticSeed(false),
       _gpuEnabled(GlobalGpuEnabled()),
+      _ispcEnabled(GlobalIspcEnabled()),
       _fitToMaximum(true) {
   setFromSpec(spec);
 }
@@ -79,6 +85,7 @@ DyscoStMan::DyscoStMan(const DyscoStMan &source)
       _distributionTruncation(source._distributionTruncation),
       _staticSeed(source._staticSeed),
       _gpuEnabled(source._gpuEnabled),
+      _ispcEnabled(source._ispcEnabled),
       _fitToMaximum(source._fitToMaximum) {}
 
 void DyscoStMan::setFromSpec(const casacore::Record &spec) {
@@ -344,6 +351,7 @@ casacore::DataManagerColumn *DyscoStMan::makeDirArrColumn(
     col.reset(new DyscoDataColumn(this, dataType));
     DyscoDataColumn &dataCol = static_cast<DyscoDataColumn &>(*col);
     dataCol.SetGpuEnabled(_gpuEnabled);
+    dataCol.SetIspcEnabled(_ispcEnabled);
     dataCol.SetFitToMaximum(_fitToMaximum);
     if (_staticSeed) dataCol.SetStaticRandomizationSeed();
   } else

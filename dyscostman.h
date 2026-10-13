@@ -47,6 +47,14 @@ namespace dyscostman {
 void SetGlobalGpuEnabled(bool enabled);
 bool GlobalGpuEnabled();
 
+/**
+ * Global default for the ISPC (CPU SIMD) backend.  Like the CUDA global, it
+ * lets tools that open an existing compressed measurement set request ISPC
+ * decoding without reaching the internally constructed storage manager.
+ */
+void SetGlobalIspcEnabled(bool enabled);
+bool GlobalIspcEnabled();
+
 class DyscoStManColumn;
 
 /**
@@ -138,6 +146,14 @@ class DyscoStMan : public casacore::DataManager {
    * be built with ENABLE_CUDA).  Must be called before columns are added.
    */
   void SetGpuEnabled(bool enabled) { _gpuEnabled = enabled; }
+
+  /**
+   * Enable the ISPC (CPU SIMD) backend for this storage manager (requires the
+   * library to be built with ENABLE_ISPC).  Must be called before columns are
+   * added.  When both the CUDA and ISPC backends are requested, CUDA takes
+   * precedence.
+   */
+  void SetIspcEnabled(bool enabled) { _ispcEnabled = enabled; }
 
   /// Enable/disable the AF fit-to-maximum post-normalization (default on).
   void SetFitToMaximum(bool enabled) { _fitToMaximum = enabled; }
@@ -419,6 +435,7 @@ class DyscoStMan : public casacore::DataManager {
   double _studentTNu, _distributionTruncation;
   bool _staticSeed;
   bool _gpuEnabled;
+  bool _ispcEnabled;
   bool _fitToMaximum;
 
   std::vector<std::unique_ptr<DyscoStManColumn>> _columns;
