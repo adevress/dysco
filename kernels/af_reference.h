@@ -11,8 +11,8 @@
  * running both on the same input must produce identical metadata and
  * identical quantization symbols.  It is used
  *   - as the `EncodeWithCounterRng` implementation of the CPU encoder, so that
- *     the CPU encoder running with the Philox RNG is bit-compatible with the
- *     GPU backend, and
+ *     the CPU encoder running with the same counter-based RNG is bit-compatible
+ *     with the GPU backend, and
  *   - as the oracle in the bit-compatibility test.
  */
 

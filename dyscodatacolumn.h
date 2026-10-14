@@ -25,7 +25,7 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
    */
   DyscoDataColumn(DyscoStMan *parent, int dtype)
       : ThreadedDyscoColumn(parent, dtype),
-        _philoxSeed(std::random_device{}()),
+        _ditherSeed(std::random_device{}()),
         _gausEncoder(),
         _normalization(Normalization::kRF),
         _gpuEnabled(false),
@@ -45,7 +45,7 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
   void SetStaticRandomizationSeed() {
     std::cout
         << "Warning: Initializing random number generator with static seed!\n";
-    _philoxSeed = 0x9E3779B97F4A7C15ull;
+    _ditherSeed = 0x9E3779B97F4A7C15ull;
   }
 
   /// Enable the GPU encoder/decoder for this column (requires ENABLE_CUDA).
@@ -98,7 +98,7 @@ class DyscoDataColumn final : public ThreadedDyscoColumn<std::complex<float>> {
     std::unique_ptr<TimeBlockEncoder> encoder;
   };
 
-  uint64_t _philoxSeed;
+  uint64_t _ditherSeed;
   std::unique_ptr<StochasticEncoder<float>> _gausEncoder;
   std::unique_ptr<TimeBlockEncoder> _decoder;
   Normalization _normalization;

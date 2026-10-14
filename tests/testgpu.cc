@@ -15,7 +15,7 @@
 #include "../dyscostman.h"
 #include "../kernels/af_reference.h"
 #include "../kernels/cuda/gpu_af_codec.h"
-#include "../kernels/philox_rng.h"
+#include "../kernels/rng.h"
 #include "../stochasticencoder.h"
 
 // Boundary assertion: the production BytePacker (the storage format) is typed
@@ -336,7 +336,7 @@ BOOST_AUTO_TEST_CASE(dictionary_lower_bound) {
       const auto seedLo = static_cast<std::uint32_t>(seed);
       const auto seedHi = static_cast<std::uint32_t>(seed >> 32);
       const std::uint32_t dither =
-          random123::ditherValue(seedLo, seedHi, 0, i);
+          rng::ditherValue(seedLo, seedHi, 0, i);
       expected[i] = encoder.EncodeWithDithering(values[i], dither);
     }
 
@@ -347,7 +347,7 @@ BOOST_AUTO_TEST_CASE(dictionary_lower_bound) {
 }
 
 // ---------------------------------------------------------------------------
-// dithering statistics (K7 + Philox) — mirrors dithering/avg_deviation
+// dithering statistics (K7 + CBRNG) — mirrors dithering/avg_deviation
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(dithering_avg_deviation) {

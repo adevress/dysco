@@ -1,7 +1,7 @@
 #include "af_reference.h"
 
 #include "../preconditions.hpp"
-#include "philox_rng.h"
+#include "rng.h"
 
 #include <algorithm>
 #include <cmath>
@@ -328,10 +328,10 @@ void cpuAfEncode(dysco::span<const float> interleaved,
     const auto base = static_cast<std::uint64_t>(i) * 2;
     symbolsOut[base] = quantizeDitherRef(
         static_cast<float>(re[i]), decValues,
-        random123::ditherForVisibility(seedLo, seedHi, blockIndex, i, 0));
+        rng::ditherForVisibility(seedLo, seedHi, blockIndex, i, 0));
     symbolsOut[base + 1] = quantizeDitherRef(
         static_cast<float>(im[i]), decValues,
-        random123::ditherForVisibility(seedLo, seedHi, blockIndex, i, 1));
+        rng::ditherForVisibility(seedLo, seedHi, blockIndex, i, 1));
   }
 }
 
