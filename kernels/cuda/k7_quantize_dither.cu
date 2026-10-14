@@ -3,11 +3,12 @@
 // Reproduces `StochasticEncoder<float>::EncodeWithDithering` for every value
 // of the block.  The binary search is performed over the *decode* values (the
 // centroids), exactly like the CPU encoder.  The dither value comes from the
-// counter-based Philox generator, indexed by the global symbol index, so the
-// sequence is independent of how the work is distributed over threads.
+// compiled-in counter-based generator (kernels/rng.h), indexed by the global
+// symbol index, so the sequence is independent of how the work is distributed
+// over threads.
 
 #include "cuda_kernels.h"
-#include "../philox_rng.h"
+#include "../rng.h"
 
 namespace dyscostman {
 namespace gpu {
@@ -53,7 +54,7 @@ __global__ void quantizeFlatKernel(cuda::std::span<const float> values,
   const std::size_t i = threadFlattenedId();
   if (i >= values.size()) return;
   const std::uint32_t dither =
-      random123::ditherValue(seedLo, seedHi, blockIndex, i);
+      rng::ditherValue(seedLo, seedHi, blockIndex, i);
   symbols[i] = quantizeDither(values[i], decValues, dither);
 }
 
@@ -70,9 +71,9 @@ __global__ void quantizeDitherKernel(MdSpan2D<const double> re,
   const std::size_t row = i / visPerRow;
   const std::size_t vi = i - row * visPerRow;
   const std::uint64_t base = static_cast<std::uint64_t>(i) * 2;
-  const std::uint32_t dRe = random123::ditherForVisibility(
+  const std::uint32_t dRe = rng::ditherForVisibility(
       seedLo, seedHi, blockIndex, i, 0);
-  const std::uint32_t dIm = random123::ditherForVisibility(
+  const std::uint32_t dIm = rng::ditherForVisibility(
       seedLo, seedHi, blockIndex, i, 1);
   symbols[base] =
       quantizeDither(static_cast<float>(re(row, vi)), decValues, dRe);

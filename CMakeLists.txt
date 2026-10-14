@@ -25,6 +25,20 @@ option(ENABLE_CUDA "Build the CUDA GPU backend" OFF)
 option(ENABLE_NVBENCH "Build nvbench-based benchmarks (requires ENABLE_CUDA)"
        OFF)
 
+# Counter-based dither generator used by every encoder (CPU and GPU): alea's
+# Threefish-based threefry4x64.  alea is header-only and is resolved through
+# pkg-config; point PKG_CONFIG_PATH at its .pc file if it is not in the
+# default search path.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ALEA REQUIRED IMPORTED_TARGET alea)
+# alea is header-only; link its imported pkg-config target so the include
+# directories propagate to every target (and subdirectory) below.
+link_libraries(PkgConfig::ALEA)
+# alea's threefry uses std::array / std::numeric_limits in constexpr code
+# that nvcc must be allowed to evaluate on the device.
+add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+message(STATUS "Dysco dither RNG: alea threefry4x64 (${ALEA_INCLUDE_DIRS})")
+
 # User may optionally set `TARGET_CPU` if `PORTABLE=OFF`
 option(PORTABLE "Build portable binaries (with slightly decreased performance)"
        OFF)
@@ -114,7 +128,7 @@ if(ENABLE_CUDA)
   target_include_directories(dsbench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(dsbench CUDA::cudart ${GSL_LIBRARIES})
 
-  # Bit-compatibility test: CPU reference (Philox) vs GPU kernels.
+  # Bit-compatibility test: CPU reference vs GPU kernels.
   add_executable(dysco_gpu_test kernels/cuda/test_af_codec.cu
                                 ${DYSCO_GPU_SOURCES} kernels/af_reference.cc)
   target_include_directories(dysco_gpu_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -157,7 +171,7 @@ if(Boost_FOUND)
     tests/testdictionary.cc
     tests/testdithering.cc
     tests/testdyscostman.cc
-    tests/testphilox.cc
+    tests/testrng.cc
     tests/testtimeblockencoder.cc
     ${DYSCO_TEST_GPU_SOURCES})
   target_link_libraries(

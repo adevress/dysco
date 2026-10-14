@@ -1,6 +1,6 @@
 #include <cmath>
 
-#include "../kernels/philox_rng.h"
+#include "../kernels/rng.h"
 #include "../stochasticencoder.h"
 
 #include <boost/test/unit_test.hpp>
@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(avg_deviation) {
     for (size_t j = 0; j != N; ++j) {
       sumsUndithered[j] += encoder->Decode(encoder->Encode(values[j]));
       sumsDithered[j] += encoder->Decode(encoder->EncodeWithDithering(
-          values[j], dyscostman::random123::ditherValue(seedLo, seedHi, 0,
+          values[j], dyscostman::rng::ditherValue(seedLo, seedHi, 0,
                                                         symbolIndex++)));
     }
     if (i+1 == check_point) {

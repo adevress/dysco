@@ -1,7 +1,7 @@
 #include "rftimeblockencoder.h"
 #include "stochasticencoder.h"
 
-#include "kernels/philox_rng.h"
+#include "kernels/rng.h"
 
 RFTimeBlockEncoder::RFTimeBlockEncoder(size_t nPol, size_t nChannels)
     : _nPol(nPol),
@@ -91,14 +91,12 @@ void RFTimeBlockEncoder::encode(
     for (size_t i = 0; i != visPerRow; ++i, ++visibilityIndex) {
       symbolBufferPtr[i * 2] = gausEncoder.EncodeWithDithering(
           row.visibilities[i].real(),
-          dyscostman::random123::ditherForVisibility(seedLo, seedHi,
-                                                     blockIndex,
-                                                     visibilityIndex, 0));
+          dyscostman::rng::ditherForVisibility(seedLo, seedHi, blockIndex,
+                                               visibilityIndex, 0));
       symbolBufferPtr[i * 2 + 1] = gausEncoder.EncodeWithDithering(
           row.visibilities[i].imag(),
-          dyscostman::random123::ditherForVisibility(seedLo, seedHi,
-                                                     blockIndex,
-                                                     visibilityIndex, 1));
+          dyscostman::rng::ditherForVisibility(seedLo, seedHi, blockIndex,
+                                               visibilityIndex, 1));
     }
     symbolBufferPtr += visPerRow * 2;
   }

@@ -123,7 +123,7 @@ DyscoDataColumn::initializeEncodeThread() {
     }
   }
   // No per-thread RNG state: the dither is a pure function of the symbol's
-  // logical address (see kernels/philox_rng.h).
+  // logical address (see kernels/rng.h).
   return std::make_unique<ThreadData>(std::move(encoder));
 }
 
@@ -133,7 +133,7 @@ void DyscoDataColumn::encode(ThreadDataBase *threadData,
                              uint64_t blockIndex) {
   ThreadData &data = static_cast<ThreadData &>(*threadData);
   data.encoder->EncodeWithCounterRng(*_gausEncoder, *buffer, metaBuffer,
-                                     symbolBuffer, nAntennae, _philoxSeed,
+                                     symbolBuffer, nAntennae, _ditherSeed,
                                      blockIndex);
 }
 
@@ -144,7 +144,7 @@ size_t DyscoDataColumn::encodePacked(ThreadDataBase *threadData,
   ThreadData &data = static_cast<ThreadData &>(*threadData);
   size_t packedBytes = 0;
   if (data.encoder->EncodePacked(*_gausEncoder, *buffer, metaBuffer, packed,
-                                 nAntennae, _philoxSeed, blockIndex,
+                                 nAntennae, _ditherSeed, blockIndex,
                                  packedBytes))
     return packedBytes;
   return 0;

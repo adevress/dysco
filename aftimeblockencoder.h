@@ -18,7 +18,7 @@ class AFTimeBlockEncoder : public TimeBlockEncoder {
 
   /**
    * Bit-compatible counterpart of the GPU encoder: same normalization order
-   * as kernels K1..K6 and Philox dither as kernel K7, implemented by the
+   * as kernels K1..K6 and the counter-based dither as kernel K7, implemented by the
    * shared CPU reference in kernels/af_reference.cc.
    */
   virtual void EncodeWithCounterRng(

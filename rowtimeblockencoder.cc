@@ -1,7 +1,7 @@
 #include "rowtimeblockencoder.h"
 #include "stochasticencoder.h"
 
-#include "kernels/philox_rng.h"
+#include "kernels/rng.h"
 
 using namespace dyscostman;
 
@@ -67,11 +67,11 @@ void RowTimeBlockEncoder::encode(const StochasticEncoder<float> &gausEncoder,
     for (size_t i = 0; i != visPerRow; ++i, ++visibilityIndex) {
       symbolBufferPtr[i * 2] = gausEncoder.EncodeWithDithering(
           row.visibilities[i].real(),
-          random123::ditherForVisibility(seedLo, seedHi, blockIndex,
+          rng::ditherForVisibility(seedLo, seedHi, blockIndex,
                                          visibilityIndex, 0));
       symbolBufferPtr[i * 2 + 1] = gausEncoder.EncodeWithDithering(
           row.visibilities[i].imag(),
-          random123::ditherForVisibility(seedLo, seedHi, blockIndex,
+          rng::ditherForVisibility(seedLo, seedHi, blockIndex,
                                          visibilityIndex, 1));
     }
     symbolBufferPtr += visPerRow * 2;

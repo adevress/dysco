@@ -45,8 +45,8 @@ class TimeBlockEncoder {
 
   /**
    * Dithered encoding.  The dither is a pure function of
-   * `(seed, blockIndex, symbolIndex)` through the counter-based Philox
-   * generator (see kernels/philox_rng.h), so the result is independent of
+   * `(seed, blockIndex, symbolIndex)` through the compiled-in counter-based
+   * generator (see kernels/rng.h), so the result is independent of
    * thread scheduling and of the number of threads, and is bit-identical
    * between the CPU and GPU encoders.
    */

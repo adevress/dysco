@@ -1,4 +1,4 @@
-// Benchmark: CPU reference (Philox) vs GPU AF encoder/decoder.
+// Benchmark: CPU reference (counter-based dither) vs GPU AF encoder/decoder.
 //
 // The block under test is either the built-in synthetic MWA-like block
 // (128 antennas, 8256 baselines, 96 channels, 4 polarizations, 8 bits) or the
@@ -6,7 +6,7 @@
 //
 // Reported for both with and without `fitToMaximum`:
 //
-//   * the CPU reference encoder with the counter-based Philox dither
+//   * the CPU reference encoder with the compiled-in counter-based dither
 //     (`cpuAfEncode`, bit-identical to the GPU),
 //   * the CUDA encode/decode codec.
 //
@@ -15,6 +15,7 @@
 #include "gpu_af_codec.h"
 
 #include "../af_reference.h"
+#include "../rng.h"
 
 #include <chrono>
 #include <fstream>
@@ -181,7 +182,7 @@ int main(int argc, char **argv) {
               decValues, outCpu);
   codec.decode(packedGpu, metaGpu, block.ant1, block.ant2, outGpu);
 
-  // ---- CPU encode (Philox reference) ----
+  // ---- CPU encode (counter-based reference) ----
   double t0 = nowSeconds();
   for (std::size_t it = 0; it != iterations; ++it)
     cpuAfEncode(block.input, block.ant1, block.ant2, nChannels, nPol, nAnt,
@@ -223,9 +224,10 @@ int main(int argc, char **argv) {
   auto rate = [&](double sec) { return rawMiB / sec; };
 
   std::printf("\n%-32s %10s %14s\n", "stage", "time [s]", "throughput");
-  std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU encode (Philox, no fit)",
+  std::printf("RNG: %s\n", rng::kName);
+  std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU encode (no fit)",
               tCpuPhi, rate(tCpuPhi));
-  std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU encode (Philox, fit-to-max)",
+  std::printf("%-32s %10.4f %11.1f MB/s\n", "CPU encode (fit-to-max)",
               tCpuPhiFit, rate(tCpuPhiFit));
   std::printf("%-32s %10.4f %11.1f MB/s  (vs CPU %.1fx)\n",
               "GPU encode (no fit)", tGpu, rate(tGpu), tCpuPhi / tGpu);

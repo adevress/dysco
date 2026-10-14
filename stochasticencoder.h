@@ -94,8 +94,8 @@ class StochasticEncoder {
    * O(log N), with N the dictionary size (2^bitcount).
    * Use Decode() on the returned symbol to get
    * the decoded value.
-   * The @p ditherValue comes from the counter-based Philox generator
-   * (kernels/philox_rng.h) and lies in [0, 2^31), matching the threshold
+   * The @p ditherValue comes from the compiled-in counter-based generator
+   * (kernels/rng.h) and lies in [0, 2^31), matching the threshold
    * computed below.
    * @param value Floating point value to be encoded.
    * @param ditherValue The dithering value to apply.

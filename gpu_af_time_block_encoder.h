@@ -16,7 +16,7 @@ class AfCodec;
  * AF time-block encoder backed by the CUDA kernels.  It is created by
  * DyscoDataColumn when the CUDA backend is selected.  The bit stream it
  * produces is identical to `AFTimeBlockEncoder::EncodeWithCounterRng`, i.e.
- * to the CPU encoder running with the Philox counter RNG.
+ * to the CPU encoder running with the same counter-based dither generator.
  */
 class GpuAFTimeBlockEncoder final : public TimeBlockEncoder {
  public:

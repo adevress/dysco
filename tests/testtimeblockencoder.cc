@@ -1,6 +1,6 @@
 #include "../aftimeblockencoder.h"
 #include "../dysconormalization.h"
-#include "../kernels/philox_rng.h"
+#include "../kernels/rng.h"
 #include "../rftimeblockencoder.h"
 #include "../rowtimeblockencoder.h"
 #include "../stochasticencoder.h"
@@ -154,11 +154,11 @@ void TestTimeBlockEncoder(Normalization blockNormalization) {
           std::complex<float> encodedVal(
               gausEncoder.Decode(gausEncoder.EncodeWithDithering(
                   rndVal.real(),
-                  dyscostman::random123::ditherForVisibility(
+                  dyscostman::rng::ditherForVisibility(
                       seedLo, seedHi, 0, visibilityIndex, 0))),
               gausEncoder.Decode(gausEncoder.EncodeWithDithering(
                   rndVal.imag(),
-                  dyscostman::random123::ditherForVisibility(
+                  dyscostman::rng::ditherForVisibility(
                       seedLo, seedHi, 0, visibilityIndex, 1))));
           unscaledRMS.Include(encodedVal - rndVal);
         }
@@ -374,7 +374,7 @@ BOOST_AUTO_TEST_CASE(rf_dynamic_range) {
   }
 }
 
-// Every encoder (AF, RF, Row) must implement the counter-based (Philox) path,
+// Every encoder (AF, RF, Row) must implement the counter-based dither path,
 // which is the only dithering path and must work without the CUDA backend.
 // This checks the properties the reproducibility argument rests on:
 // determinism for a fixed (seed, block) and block-index sensitivity.
@@ -417,7 +417,7 @@ void TestCounterRng(Normalization blockNormalization) {
   BOOST_CHECK(std::equal(meta1.data(), meta1.data() + metaCount, meta2.data()));
   BOOST_CHECK(std::equal(sym1.data(), sym1.data() + symCount, sym2.data()));
 
-  // The block index is part of the Philox counter: another block gets a
+  // The block index is part of the RNG counter: another block gets a
   // different dither sequence.
   aocommon::UVector<TimeBlockEncoder::symbol_t> symOtherBlock(symCount);
   encoder->EncodeWithCounterRng(gausEncoder, buffer, meta2.data(),

@@ -1,4 +1,4 @@
-#include "../kernels/philox_rng.h"
+#include "../kernels/rng.h"
 #include "../stochasticencoder.h"
 
 #include <boost/test/unit_test.hpp>
@@ -42,7 +42,7 @@ void make(const std::string& filenamePrefix, aocommon::UVector<double> values) {
 
     for (size_t instance = 0; instance != trial; ++instance) {
       for (size_t i = 0; i != values.size(); ++i) {
-        const unsigned dither = random123::ditherValue(seedLo, seedHi, 0,
+        const unsigned dither = rng::ditherValue(seedLo, seedHi, 0,
                                                        symbolIndex++);
         sums[i] += enc.Decode(enc.EncodeWithDithering(values[i], dither));
       }
